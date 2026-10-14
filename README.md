@@ -26,10 +26,11 @@ Both run **in a single request**, with no mid-way questions, and report **conclu
 
 ### forensic-audit
 
-1. **Dual-focus selection**: exactly 10 audit points, 5 by impact and 5 by uncertainty.
-2. **Closed loop per point**: baseline (BEFORE), simulation (AFTER), live primary-source check, red-team falsification, fail-closed recovery.
-3. **Hard rollback** to the baseline on any deviation, automatic release on a full pass.
-4. **Forensic hand-over**: attribution matrix, audit log, negative declaration, execution protocol and an audit stamp.
+1. **Tool check and mandatory sourcing**: every point is searched; each gets a source status (🔎 sourced, 🔍 snippet only, ⚠️ no source found, 🚫 not searched) and a method label (⚙️ executed, 🧮 hand-calculated, 🧠 reasoned).
+2. **Dual-focus selection**: exactly 10 audit points, 5 by impact and 5 by uncertainty, with no filler points.
+3. **Closed loop per point**: baseline (BEFORE), simulation (AFTER), primary-source check, red-team falsification, repair with at most two rounds before fail-closed.
+4. **Evidence-based status**: ✅ confirmed, 🟡 plausible, 🔁 corrected, ⛔ fail-closed, ❓ unverified.
+5. **Honest hand-over**: two verdicts (original output and corrected version), confidence, source gaps, negative declaration and an execution protocol.
 
 ### forensic-site-audit
 
