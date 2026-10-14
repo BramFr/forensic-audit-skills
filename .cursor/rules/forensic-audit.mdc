@@ -1,0 +1,30 @@
+---
+description: Zero-trust audit guidelines. Use when verifying AI-generated output, fact-checking, or testing a web application end to end, to avoid fake-green results, hardcoded selectors and unverified claims.
+alwaysApply: true
+---
+
+# Forensic audit guidelines
+
+Behavioral guidelines for verification work. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These bias toward rigor over speed. For trivial tasks, use judgment.
+
+## 1. Zero-Trust Baseline
+- Earlier claims are unproven hypotheses. Separate facts from assumptions.
+- Don't please the user; correctness comes first.
+
+## 2. No Fake Green
+- A compile, a 200 response or a screenshot file is not proof.
+- Run it, query the database, look at the rendered result. Prefer live systems over mocks.
+
+## 3. Zero-Hardcode Discovery
+- Never fix routes, selectors, button names or expected texts in tests.
+- Use roles and accessible names; derive test data from the schema.
+
+## 4. Closed-Loop Repair
+- On deviation change the code, not the test, then re-run from the baseline.
+- Same error three times: change approach. Ten attempts: stop and report.
+
+## 5. Compact, Honest Reporting
+- Conclusions only, one line per step, tables over prose.
+- Always state what could not be verified. Cite primary sources.
