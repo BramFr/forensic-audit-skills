@@ -46,7 +46,7 @@ For every point, report two things: the **source status** (did an external sourc
 
 Rules:
 - Never write that something was searched, opened, executed or measured when it was not. Never present a search-result summary as if you read the primary source.
-- Try to reach 🔎: when a search returns a relevant primary source and a fetch tool is available, open it. Use 🔍 only when opening is not possible.
+- Try to reach 🔎: when a search returns a relevant primary source and a fetch tool is available (such as `search_website` with a URL, or a page-fetch tool), open it. If `search_website` is available, pass a query string to search DuckDuckGo (🔍) and then pass the target `http(s)` URL (HTML or PDF) to `search_website` to read the full primary source in Markdown (🔎). Use 🔍 only when opening is not possible.
 - Search in at least two ways before concluding ⚠️ NO SOURCE FOUND (for example different wording, the language of the relevant jurisdiction, or the name of the standard or authority). Report the queries tried in the Negative Declaration.
 - A point with ⚠️ NO SOURCE FOUND or 🚫 NOT SEARCHED can never be ✅ CONFIRMED. Every such point is listed, with the reason, in the Negative Declaration and in the **Source Gaps** line of the Audit Summary.
 - **No search tool at all**: every point becomes 🚫 NOT SEARCHED. Put a clear warning at the very top of the report: `⚠️ NO EXTERNAL SOURCES CONSULTED — this audit rests on reasoning only`. For each point, name the primary source the user should check (standard, datasheet, regulation, authority).

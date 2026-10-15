@@ -15,12 +15,13 @@ AI-generated output tends to look right without being right:
 
 ## The Solution
 
-| Skill | Use it to | Addresses |
+| Component | Use it to | Addresses |
 |-------|-----------|-----------|
 | [**forensic-audit**](skills/forensic-audit/SKILL.md) | Audit and fact-check any AI-generated output (code, plans, recipes, contracts, calculations, advice) | Fake green, silent assumptions, outdated or unsafe advice |
 | [**forensic-site-audit**](skills/forensic-site-audit/SKILL.md) | Crawl a website or web app, test every feature against the live backend, capture and judge screenshots | Brittle tests, missing evidence, untested pages, UX defects |
+| [**mcp/web-search**](mcp/web-search/README.md) | Single-tool MCP server (`search_website`): DuckDuckGo search (`🔍 SNIPPET`) + untruncated HTML/PDF to Markdown (`🔎 SOURCED`), no API keys | Unopened primary sources, unreadable PDF datasheets/standards, paid search API lock-in |
 
-Both run **in a single request**, with no mid-way questions, and report **conclusions only**.
+Both skills run **in a single request**, with no mid-way questions, and report **conclusions only**.
 
 ## How It Works
 
@@ -100,6 +101,31 @@ This installs both skills plus [GEMINI.md](GEMINI.md) as context. Alternatively 
 
 Copy `skills/forensic-audit/` and/or `skills/forensic-site-audit/` into your workspace `.agents/skills/` or the global skills directory. The `SKILL.md` format is the same.
 
+### Companion MCP Server (`web-search` / `search_website`)
+
+To give your agent keyless DuckDuckGo search (`🔍 SNIPPET`) and full HTML/PDF-to-Markdown extraction (`🔎 SOURCED`) via a single tool (`search_website`), sync [`mcp/web-search`](mcp/web-search/README.md) with `uv` and add it to your MCP configuration (for example `~/.gemini/config/mcp_config.json`, `.cursor/mcp.json`, or `~/.claude.json`):
+
+```bash
+uv sync --directory mcp/web-search
+```
+
+```json
+{
+  "mcpServers": {
+    "web-search": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/forensic-audit-skills/mcp/web-search",
+        "python",
+        "server.py"
+      ]
+    }
+  }
+}
+```
+
 ## Usage
 
 Just describe the task. The skills trigger on intent.
@@ -130,6 +156,12 @@ forensic-audit-skills/
 │   ├── marketplace.json
 │   └── plugin.json
 ├── .cursor/rules/forensic-audit.mdc
+├── mcp/
+│   └── web-search/
+│       ├── pyproject.toml
+│       ├── README.md
+│       ├── server.py
+│       └── tests/test_server.py
 ├── skills/
 │   ├── forensic-audit/SKILL.md
 │   └── forensic-site-audit/SKILL.md
