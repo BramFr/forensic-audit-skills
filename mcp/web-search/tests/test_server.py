@@ -1,4 +1,4 @@
-﻿import httpx
+import httpx
 import pymupdf
 import pytest
 from pydantic import ValidationError
@@ -170,3 +170,77 @@ def test_tier3_browser_fallback_on_waf_403(monkeypatch):
     out = search_website("https://example.org/waf-protected")
     assert "Rendered After WAF Bypass" in out
     assert "Full article content rendered by headless Chrome." in out
+
+
+def test_ddg_http_202_anomaly_triggers_ddgs_fallback_and_filters_ads(monkeypatch):
+    """When DDG returns HTTP 202 anomaly-modal, fallback to ddgs and filter out ads."""
+    anomaly_html = (
+        '<html><body><div class="anomaly-modal__modal" data-testid="anomaly-modal">'
+        "Unfortunately, bots use DuckDuckGo too. cc=botnet</div></body></html>"
+    )
+
+    def fake_post_202(url, data, **kwargs):
+        request = httpx.Request("POST", url)
+        return httpx.Response(202, text=anomaly_html, request=request)
+
+    def fake_ddgs_fallback(query, max_results=10):
+        return [
+            {
+                "title": "Sponsored Ad",
+                "href": "https://www.bing.com/aclick?ld=123",
+                "body": "Ad snippet",
+            },
+            {
+                "title": "DDG Ad",
+                "href": "https://duckduckgo.com/y.js?ad_domain=example.com",
+                "body": "DDG ad snippet",
+            },
+            {
+                "title": "Deployment Safeguards on AKS",
+                "href": "https://learn.microsoft.com/en-us/azure/aks/deployment-safeguards",
+                "body": "Official Azure AKS Deployment Safeguards reference.",
+            },
+        ]
+
+    monkeypatch.setattr("server._http_post", fake_post_202)
+    monkeypatch.setattr("server._search_ddgs_fallback", fake_ddgs_fallback, raising=False)
+
+    out = search_website("azurepolicy k8sazurev2noprivilege deployment safeguards")
+    assert "Deployment Safeguards on AKS" in out
+    assert "https://learn.microsoft.com/en-us/azure/aks/deployment-safeguards" in out
+    assert "bing.com/aclick" not in out
+    assert "duckduckgo.com/y.js" not in out
+
+
+def test_ddg_anomaly_and_ddgs_failure_returns_fail_closed_error(monkeypatch):
+    """When DDG returns HTTP 202 anomaly AND ddgs fallback raises, return fail-closed ERROR."""
+    anomaly_html = (
+        '<html><body><div data-testid="anomaly-modal">cc=botnet</div></body></html>'
+    )
+
+    def fake_post_202(url, data, **kwargs):
+        request = httpx.Request("POST", url)
+        return httpx.Response(202, text=anomaly_html, request=request)
+
+    def fake_ddgs_error(query, max_results=10):
+        raise RuntimeError("All ddgs backends rate-limited or unreachable")
+
+    monkeypatch.setattr("server._http_post", fake_post_202)
+    monkeypatch.setattr("server._search_ddgs_fallback", fake_ddgs_error, raising=False)
+
+    out = search_website("kaniko kubernetes non-root securityContext")
+    assert out.startswith("ERROR:")
+    assert "No DuckDuckGo results found" not in out
+
+
+def test_ddg_empty_200_and_ddgs_no_results_returns_no_results_message(monkeypatch):
+    """When both DDG (HTTP 200) and ddgs find 0 organic results without error, return No results."""
+    def fake_post_200_empty(url, data, **kwargs):
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, text="<html><body></body></html>", request=request)
+
+    monkeypatch.setattr("server._http_post", fake_post_200_empty)
+    monkeypatch.setattr("server._search_ddgs_fallback", lambda q, max_results=10: [])
+
+    out = search_website("nonexistent_xyz_query_987654321")
+    assert out == "No DuckDuckGo results found for query: 'nonexistent_xyz_query_987654321'."

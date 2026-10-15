@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "forensic-web-search"
 version = "1.1.0"
 description = "Single-tool MCP server (search_website) for zero-trust forensic audits: DuckDuckGo search + 3-tier WAF/CMP/Playwright HTML & PDF to Markdown extraction."
@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "curl_cffi>=0.7.0",
+    "ddgs>=9.0.0",
     "fastmcp>=2.0.0",
     "httpx>=0.27.0",
     "lxml>=5.0.0",

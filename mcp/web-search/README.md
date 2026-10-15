@@ -13,7 +13,7 @@ Built-in agent web tools often truncate pages, fail on PDFs, or require paid sea
 
 | Input (`query_or_url`) | Action | Output |
 |---|---|---|
-| Search query (anything not starting with `http://` or `https://`) | Queries DuckDuckGo HTML (`https://html.duckduckgo.com/html/`), unwraps redirect links | Top 10 results in Markdown (title, direct URL, snippet) |
+| Search query (anything not starting with `http://` or `https://`) | **2-tier search cascade**: (1) Direct DuckDuckGo HTML (`https://html.duckduckgo.com/html/`), checking strictly for `HTTP 200` without `anomaly-modal` / `cc=botnet` challenges; (2) automatic metasearch fallback via `ddgs` (`backend="auto"`, routed through a `curl_cffi` `primp.Client` shim for native OS DNS resolution), stripping ad redirects (`bing.com/aclick`, `duckduckgo.com/y.js`) | Top 10 organic results in Markdown (title, direct URL, snippet) |
 | Web URL (`http://...` or `https://...`) | **3-tier fetch cascade**: (1) `curl_cffi` (`impersonate="chrome"`) for authentic BoringSSL JA3/JA4 TLS + HTTP/2 fingerprints (bypasses Akamai/Cloudflare WAFs), (2) automatic CMP/cookie-gate redirect unwrapping (`myprivacy.dpgmedia.nl`, JS `callbackUrl`, meta-refresh), (3) automatic headless Chrome fallback via Playwright for JS-only SPAs; extracts full article, tables, links and portal headlines via `trafilatura` + `lxml` | Full page content in Markdown (untruncated) |
 | PDF URL (`Content-Type: application/pdf`, `.pdf`, or `%PDF-` header) | Opens the byte stream via `pymupdf` and converts all pages via `pymupdf4llm` | Full document in Markdown (untruncated) |
 
