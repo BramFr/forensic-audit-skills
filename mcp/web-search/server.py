@@ -1,18 +1,14 @@
-import contextlib
+﻿import contextlib
 import re
 import sys
-from collections.abc import Mapping
 from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 with contextlib.redirect_stdout(sys.stderr):
-    import primp
     import pymupdf
     import pymupdf4llm
     import trafilatura
     from curl_cffi import requests as curl_requests
-    from ddgs import DDGS
-    from ddgs.exceptions import DDGSException
     from fastmcp import FastMCP
     from lxml import html as lxml_html
     from pydantic import BaseModel, ConfigDict, field_validator
@@ -182,46 +178,6 @@ def _is_pdf(url: str, content_type: str, content: bytes) -> bool:
     return clean_url.endswith(".pdf")
 
 
-class _CurlPrimpClient:
-    """Drop-in replacement for primp.Client using curl_cffi and OS native DNS."""
-
-    def __init__(
-        self, proxy: str | None = None, timeout: int | None = 10, **kwargs: Any
-    ) -> None:
-        self._timeout = float(timeout or 10)
-        self._session = curl_requests.Session(
-            impersonate="chrome",
-            proxy=proxy,
-            timeout=self._timeout,
-        )
-
-    def headers_update(self, headers: Mapping[str, str] | None) -> None:
-        if headers:
-            self._session.headers.update(dict(headers))
-
-    def set_cookies(self, url: str, cookies: Mapping[str, str] | None) -> None:
-        if cookies:
-            self._session.cookies.update(dict(cookies))
-
-    def request(self, method: str, url: str, *args: Any, **kwargs: Any) -> Any:
-        return self._session.request(method, url, *args, **kwargs)
-
-
-def _is_ad_url(href: str) -> bool:
-    lowered = href.strip().lower()
-    return (
-        not lowered.startswith(("http://", "https://"))
-        or "bing.com/aclick" in lowered
-        or "duckduckgo.com/y.js" in lowered
-    )
-
-
-def _is_ddg_anomaly(status_code: int, html_text: str) -> bool:
-    if status_code != 200:
-        return True
-    return "anomaly-modal" in html_text or "cc=botnet" in html_text
-
-
 def _clean_ddg_href(raw_href: str) -> str:
     href = raw_href.strip()
     if href.startswith("//"):
@@ -245,13 +201,10 @@ def _parse_ddg_html(
             continue
         snippet_el = div.xpath('.//*[contains(@class, "result__snippet")]')
         raw_href = title_el[0].get("href", "")
-        cleaned_href = _clean_ddg_href(raw_href)
-        if _is_ad_url(cleaned_href):
-            continue
         results.append(
             {
                 "title": " ".join(title_el[0].text_content().split()),
-                "href": cleaned_href,
+                "href": _clean_ddg_href(raw_href),
                 "body": (
                     " ".join(snippet_el[0].text_content().split())
                     if snippet_el
@@ -262,38 +215,6 @@ def _parse_ddg_html(
         if len(results) >= max_results:
             break
     return results
-
-
-def _search_ddgs_fallback(
-    query: str, max_results: int = 10
-) -> list[dict[str, Any]]:
-    """Tier 2 metasearch fallback via ddgs routed through curl_cffi OS DNS."""
-    primp.Client = _CurlPrimpClient
-    try:
-        with contextlib.redirect_stdout(sys.stderr):
-            raw_results = DDGS().text(
-                query, max_results=max_results * 2, backend="auto"
-            )
-    except DDGSException as exc:
-        if str(exc).strip() == "No results found.":
-            return []
-        raise
-
-    cleaned: list[dict[str, Any]] = []
-    for item in raw_results or []:
-        href = (item.get("href") or "").strip()
-        if _is_ad_url(href):
-            continue
-        cleaned.append(
-            {
-                "title": (item.get("title") or "Untitled").strip(),
-                "href": href,
-                "body": (item.get("body") or "").strip(),
-            }
-        )
-        if len(cleaned) >= max_results:
-            break
-    return cleaned
 
 
 def _extract_portal_headlines(html_text: str, base_url: str) -> str:
@@ -401,36 +322,18 @@ def _fetch_url_as_markdown(url: str) -> str:
 
 
 def _search_duckduckgo(query: str) -> str:
-    results: list[dict[str, Any]] = []
-    tier1_blocked_or_failed = False
-    tier1_error_detail = ""
-
     try:
         resp = _http_post(DDG_HTML_URL, data={"q": query})
-        if resp.status_code >= 400 or _is_ddg_anomaly(resp.status_code, resp.text):
-            tier1_blocked_or_failed = True
-            tier1_error_detail = f"HTTP {resp.status_code} (anti-bot challenge or error)"
-        else:
-            results = _parse_ddg_html(resp.text, max_results=10)
     except Exception as exc:
-        tier1_blocked_or_failed = True
-        tier1_error_detail = str(exc)
+        return f"ERROR: DuckDuckGo search failed for '{query}': {exc}"
 
-    if not results:
-        try:
-            fallback_items = _search_ddgs_fallback(query, max_results=10)
-            results = [
-                item
-                for item in fallback_items
-                if not _is_ad_url(item.get("href", ""))
-            ][:10]
-        except Exception as exc:
-            if tier1_blocked_or_failed:
-                return (
-                    f"ERROR: DuckDuckGo search failed ({tier1_error_detail}) "
-                    f"and ddgs fallback failed for '{query}': {exc}"
-                )
+    if resp.status_code >= 400:
+        return (
+            f"ERROR: DuckDuckGo returned HTTP {resp.status_code} "
+            f"for query '{query}'."
+        )
 
+    results = _parse_ddg_html(resp.text, max_results=10)
     if not results:
         return f"No DuckDuckGo results found for query: '{query}'."
 
