@@ -1,13 +1,14 @@
-import contextlib
+﻿import contextlib
+import re
 import sys
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 with contextlib.redirect_stdout(sys.stderr):
-    import httpx
     import pymupdf
     import pymupdf4llm
     import trafilatura
+    from curl_cffi import requests as curl_requests
     from fastmcp import FastMCP
     from lxml import html as lxml_html
     from pydantic import BaseModel, ConfigDict, field_validator
@@ -15,18 +16,26 @@ with contextlib.redirect_stdout(sys.stderr):
 mcp = FastMCP("web-search")
 
 DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
     "Accept": (
         "text/html,application/xhtml+xml,application/xml;q=0.9,"
         "application/pdf,*/*;q=0.8"
     ),
+    "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+
+DEFAULT_COOKIES = {
+    "SOCS": "CAISHAgBEhJnd3NfMjAyMzA4MTUtMF9SQzIaAm5sIAEaBgiAo_CmBg",
 }
 
 DDG_HTML_URL = "https://html.duckduckgo.com/html/"
+
+_JS_CALLBACK_RE = re.compile(
+    r"decodeURIComponent\(\s*['\"](https?%3A%2F%2F[^'\"]+)['\"]\s*\)"
+)
+_META_REFRESH_RE = re.compile(
+    r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+content=["\']?\d+\s*;\s*url=([^"\'>\s]+)',
+    re.IGNORECASE,
+)
 
 
 class SearchWebsiteInput(BaseModel):
@@ -42,26 +51,117 @@ class SearchWebsiteInput(BaseModel):
         return value
 
 
-def _http_get(url: str, timeout: float = 30.0) -> httpx.Response:
-    return httpx.get(
+def _unwrap_consent_redirect(current_url: str, html_text: str) -> str | None:
+    """Detect DPG Media / CMP JavaScript callbackUrl or meta-refresh redirect."""
+    if not html_text:
+        return None
+    js_match = _JS_CALLBACK_RE.search(html_text)
+    if js_match:
+        return unquote(js_match.group(1))
+
+    parsed = urlparse(current_url)
+    if any(
+        host in parsed.netloc.lower()
+        for host in ("myprivacy.", "consent.", "privacygate")
+    ):
+        qs = parse_qs(parsed.query)
+        for key in ("callbackUrl", "redirectUri", "continue"):
+            if key in qs and qs[key]:
+                target = unquote(qs[key][0])
+                if target.startswith("http://") or target.startswith("https://"):
+                    return target
+
+    if len(html_text) < 16384:
+        meta_match = _META_REFRESH_RE.search(html_text)
+        if meta_match:
+            return urljoin(current_url, meta_match.group(1).strip("'\""))
+    return None
+
+
+def _http_get(url: str, timeout: float = 30.0) -> Any:
+    """Fetch URL using Chrome TLS/HTTP2 impersonation and automatic consent-gate unwrapping."""
+    session = curl_requests.Session(impersonate="chrome")
+    resp = session.get(
         url,
         headers=DEFAULT_HEADERS,
-        follow_redirects=True,
+        cookies=DEFAULT_COOKIES,
+        allow_redirects=True,
         timeout=timeout,
     )
+    content_type = resp.headers.get("content-type", "")
+    if "html" in content_type.lower() and resp.status_code < 400:
+        final_url = str(getattr(resp, "url", url))
+        callback_url = _unwrap_consent_redirect(final_url, resp.text)
+        if callback_url and callback_url != final_url:
+            resp = session.get(
+                callback_url,
+                headers=DEFAULT_HEADERS,
+                allow_redirects=True,
+                timeout=timeout,
+            )
+    return resp
 
 
 def _http_post(
     url: str, data: dict[str, str], timeout: float = 20.0
-) -> httpx.Response:
+) -> Any:
     headers = {**DEFAULT_HEADERS, "Referer": "https://html.duckduckgo.com/"}
-    return httpx.post(
+    session = curl_requests.Session(impersonate="chrome")
+    return session.post(
         url,
         data=data,
         headers=headers,
-        follow_redirects=True,
+        allow_redirects=True,
         timeout=timeout,
     )
+
+
+def _fetch_html_via_browser(url: str, timeout: float = 25.0) -> str | None:
+    """Tier 3 fallback: render JS-only SPAs or strict WAF pages via local headless Chrome."""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                channel="chrome",
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            try:
+                context = browser.new_context(
+                    locale="nl-NL",
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                )
+                page = context.new_page()
+                page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=int(timeout * 1000),
+                )
+                page.wait_for_timeout(1200)
+                for selector in (
+                    "button:has-text('Akkoord')",
+                    "button:has-text('Accepteren')",
+                    "button:has-text('Accept all')",
+                    "button:has-text('Accept')",
+                ):
+                    try:
+                        loc = page.locator(selector).first
+                        if loc.is_visible(timeout=400):
+                            loc.click(timeout=1000)
+                            page.wait_for_timeout(800)
+                            break
+                    except Exception:
+                        pass
+                return page.content()
+            finally:
+                browser.close()
+    except Exception:
+        return None
 
 
 def _is_url(value: str) -> bool:
@@ -117,24 +217,75 @@ def _parse_ddg_html(
     return results
 
 
+def _extract_portal_headlines(html_text: str, base_url: str) -> str:
+    """Extract structured headlines and links from portal/overview pages."""
+    try:
+        tree = lxml_html.fromstring(html_text)
+    except Exception:
+        return ""
+
+    seen: set[str] = set()
+    items: list[str] = []
+    xpath_query = (
+        '//a[contains(@class, "headline") '
+        "or ancestor::h1 or ancestor::h2 or ancestor::h3 "
+        'or ancestor::article//a]'
+    )
+    for node in tree.xpath(xpath_query):
+        text = " ".join(node.text_content().split())
+        href = (node.get("href") or "").strip()
+        if len(text) < 12 or not href or href.startswith("#") or href.startswith("javascript:"):
+            continue
+        full_url = urljoin(base_url, href)
+        key = f"{text}|{full_url}"
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(f"- [{text}]({full_url})")
+    return "\n".join(items)
+
+
+def _html_to_markdown(html_text: str, url: str) -> str | None:
+    extracted = trafilatura.extract(
+        html_text,
+        url=url,
+        output_format="markdown",
+        include_tables=True,
+        include_links=True,
+        include_formatting=True,
+        favor_recall=True,
+    )
+    body = (extracted or "").strip()
+    if len(html_text) > 30000 and len(body) < 4000:
+        headlines = _extract_portal_headlines(html_text, url)
+        if headlines:
+            body = f"{headlines}\n\n{body}".strip()
+    return body or None
+
+
 def _fetch_url_as_markdown(url: str) -> str:
     try:
         response = _http_get(url)
     except Exception as exc:
         return f"ERROR: Failed to fetch URL '{url}': {type(exc).__name__}: {exc}"
 
-    if response.status_code >= 400:
-        return (
-            f"ERROR: HTTP {response.status_code} when fetching URL '{url}'."
-        )
-
-    content_type = response.headers.get("content-type", "")
-    raw_bytes = response.content
-
-    if not raw_bytes:
-        return f"ERROR: Empty response body from URL '{url}'."
-
     with contextlib.redirect_stdout(sys.stderr):
+        if response.status_code >= 400:
+            rendered_html = _fetch_html_via_browser(url)
+            if rendered_html:
+                md_from_browser = _html_to_markdown(rendered_html, url)
+                if md_from_browser:
+                    return f"# Source: {url}\n\n{md_from_browser}"
+            return (
+                f"ERROR: HTTP {response.status_code} when fetching URL '{url}'."
+            )
+
+        content_type = response.headers.get("content-type", "")
+        raw_bytes = response.content
+
+        if not raw_bytes:
+            return f"ERROR: Empty response body from URL '{url}'."
+
         if _is_pdf(url, content_type, raw_bytes):
             try:
                 doc = pymupdf.open(stream=raw_bytes, filetype="pdf")
@@ -156,21 +307,18 @@ def _fetch_url_as_markdown(url: str) -> str:
         ):
             return f"# Source: {url}\n\n{response.text}"
 
-        html_text = response.text
-        extracted = trafilatura.extract(
-            html_text,
-            url=url,
-            output_format="markdown",
-            include_tables=True,
-            include_links=True,
-            include_formatting=True,
-        )
-        if not extracted or not extracted.strip():
+        md_body = _html_to_markdown(response.text, url)
+        if not md_body:
+            rendered_html = _fetch_html_via_browser(url)
+            if rendered_html:
+                md_body = _html_to_markdown(rendered_html, url)
+
+        if not md_body:
             return (
                 f"ERROR: Could not extract readable content from '{url}' "
                 "(page may require JavaScript or have no main article text)."
             )
-        return f"# Source: {url}\n\n{extracted.strip()}"
+        return f"# Source: {url}\n\n{md_body}"
 
 
 def _search_duckduckgo(query: str) -> str:

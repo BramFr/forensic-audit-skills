@@ -1,9 +1,13 @@
-import httpx
+﻿import httpx
 import pymupdf
 import pytest
 from pydantic import ValidationError
 
-from server import SearchWebsiteInput, search_website
+from server import (
+    SearchWebsiteInput,
+    _unwrap_consent_redirect,
+    search_website,
+)
 
 
 def _make_sample_pdf_bytes(text: str) -> bytes:
@@ -113,12 +117,13 @@ def test_fetch_pdf_url_to_markdown(monkeypatch):
 
 
 def test_fault_injection_http_error_and_network_failure(monkeypatch):
-    """Fault injection: HTTP 403 and network timeouts must return explicit ERROR messages."""
+    """Fault injection: HTTP 403 (when browser fallback also fails) and timeouts return ERROR."""
     def fake_get_403(url, **kwargs):
         request = httpx.Request("GET", url)
         return httpx.Response(403, text="Forbidden", request=request)
 
     monkeypatch.setattr("server._http_get", fake_get_403)
+    monkeypatch.setattr("server._fetch_html_via_browser", lambda url, timeout=25.0: None)
     out_403 = search_website("https://example.org/blocked")
     assert "ERROR" in out_403
     assert "403" in out_403
@@ -130,3 +135,38 @@ def test_fault_injection_http_error_and_network_failure(monkeypatch):
     out_timeout = search_website("https://example.org/timeout")
     assert "ERROR" in out_timeout
     assert "Connection timed out" in out_timeout
+
+
+def test_unwrap_dpg_consent_gate_redirect():
+    """Consent gate HTML with decodeURIComponent callbackUrl must be unwrapped."""
+    consent_html = (
+        "<script>const callbackUrl = new URL("
+        "decodeURIComponent("
+        "'https%3A%2F%2Ftweakers.net%2Fprivacygate-confirm%3FredirectUri%3D%252F'"
+        "));</script>"
+    )
+    target_url = _unwrap_consent_redirect(
+        "https://myprivacy.dpgmedia.nl/consent", consent_html
+    )
+    assert target_url == "https://tweakers.net/privacygate-confirm?redirectUri=%2F"
+
+
+def test_tier3_browser_fallback_on_waf_403(monkeypatch):
+    """When HTTP returns 403 WAF block, server must attempt headless browser fallback."""
+    def fake_get_403(url, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(403, text="Blocked by WAF", request=request)
+
+    def fake_browser_fetch(url, timeout=25.0):
+        return (
+            "<html><body><article><h1>Rendered After WAF Bypass</h1>"
+            "<p>Full article content rendered by headless Chrome.</p>"
+            "</article></body></html>"
+        )
+
+    monkeypatch.setattr("server._http_get", fake_get_403)
+    monkeypatch.setattr("server._fetch_html_via_browser", fake_browser_fetch)
+
+    out = search_website("https://example.org/waf-protected")
+    assert "Rendered After WAF Bypass" in out
+    assert "Full article content rendered by headless Chrome." in out
