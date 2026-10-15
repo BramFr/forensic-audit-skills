@@ -14,10 +14,10 @@ Built-in agent web tools often truncate pages, fail on PDFs, or require paid sea
 | Input (`query_or_url`) | Action | Output |
 |---|---|---|
 | Search query (anything not starting with `http://` or `https://`) | Queries DuckDuckGo HTML (`https://html.duckduckgo.com/html/`), unwraps redirect links | Top 10 results in Markdown (title, direct URL, snippet) |
-| Web URL (`http://...` or `https://...`) | Fetches the page via `httpx` and extracts the full article, tables and links via `trafilatura` | Full page content in Markdown (untruncated) |
+| Web URL (`http://...` or `https://...`) | **3-tier fetch cascade**: (1) `curl_cffi` (`impersonate="chrome"`) for authentic BoringSSL JA3/JA4 TLS + HTTP/2 fingerprints (bypasses Akamai/Cloudflare WAFs), (2) automatic CMP/cookie-gate redirect unwrapping (`myprivacy.dpgmedia.nl`, JS `callbackUrl`, meta-refresh), (3) automatic headless Chrome fallback via Playwright for JS-only SPAs; extracts full article, tables, links and portal headlines via `trafilatura` + `lxml` | Full page content in Markdown (untruncated) |
 | PDF URL (`Content-Type: application/pdf`, `.pdf`, or `%PDF-` header) | Opens the byte stream via `pymupdf` and converts all pages via `pymupdf4llm` | Full document in Markdown (untruncated) |
 
-On HTTP `>= 400`, timeouts, empty bodies or unextractable JS-only shells, it returns an explicit `ERROR:` string rather than an empty pass so the agent never mistakes a failed fetch for `🔎 SOURCED`.
+If all three tiers fail (for example a hard login wall or unreachable host), it returns an explicit `ERROR:` string rather than an empty pass so the agent never mistakes a failed fetch for `🔎 SOURCED`.
 
 ## Install & Register
 
