@@ -53,11 +53,17 @@ Read `references/audit-brief.md` first: it tells you how to pick the 10 audit po
 
 Keep the compact report short. Carry three things into phase 3: what was **wrong or outdated**, what is **unverified** (source gaps, 🟡/❓ points), and any **question the audit needs answered** (the forensic-audit rule of asking one question when a missing fact changes the verdict now becomes a grill question).
 
+**Hand-over to the grill (do not stop here).** The compact report from `forensic-audit` is a final-answer format ("show exactly this, nothing more", ending with "Say 'full report'"), so if you print it as is, the turn feels finished and the grill questions never appear. In this skill it is only input for the plan. After the audit:
+
+1. Show at most a short audit summary (verdict, what was wrong, what is unverified), without the "Solution" section, the counts line or the "Say 'full report'" line, unless the user asked for the full report.
+2. In the **same turn**, continue straight into phase 3 and put the first grill question at the very end of the message, so it is the last thing the user reads.
+3. End the turn only with a question for the user (or with the approval question of phase 4), never with a report.
+
 ### Phase 3: Grill
 
 Interview the user until the plan is unambiguous. If a `grill-me` skill is available, use it. Otherwise follow this protocol:
 
-- Ask **one question at a time**, each with your **recommended answer** and a one-line reason, so the user can simply confirm.
+- Ask **one question at a time**, each with your **recommended answer** and a one-line reason, so the user can simply confirm. If the session has a question tool (for example `ask_question`), use it: list the recommended answer first, marked "(Recommended)", so the question is shown as a prompt instead of buried in text. Without such a tool, write the question as the last lines of your message, in bold.
 - If a question can be answered by reading the code or docs, look it up instead of asking.
 - Walk the decision tree depth first: settle a decision before the ones that depend on it.
 - Start with what matters most for avoiding a wrong build: the problem and the outcome the user wants, then fit with the product vision, then scope in and out (including what we are explicitly **not** doing), then edge cases, data and migrations, dependencies on other items, how we will know it works (acceptance criteria), and priority.
