@@ -30,3 +30,22 @@ A docs item, a comment or a function name is a hypothesis, not evidence. Run the
 ## Re-audit after the grill
 
 When the grill changes scope, approach or dependencies, audit only the new or changed claims (a smaller set of points is fine, the rules per point stay the same) and merge the result into the same Starting point section.
+
+## Evidence rules (what counts)
+
+- **🔎 holds per claim, not per page.** A page only counts as opened when you saw the text that proves or refutes that claim (grep the fetched output for it). A page that returned only navigation, a 404 text, an empty list or no mention of the claim is 🔍 at best.
+- **Secondary sources are 🔍.** A commercial or knowledge-base page, or a primary source seen only through someone else's quote (for example a drug compendium quoting a guideline), never gives 🔎 for the original claim.
+- **Gated or blocked primary sources** (paid standards such as NEN, HTTP 401/403 after one retry with another primary URL): 🔍 plus "primary gated" in the source gaps; the point is at most 🟡 and never ✅.
+- **No primary source exists** (for example typical brake-pad lifetime in km): ⚠️ NO SOURCE FOUND, status 🟡 or ❓, listed under Unverified in the plan. Do not upgrade it with marketing pages.
+- **Purely internal points** (does the feature already exist, what does a docs item claim, does the import work): evidence is `file:line` or the output of a command (⚙️), and an external search is not forced. Not all 10 points may be internal; pick points that can be checked externally for the rest.
+- **Domain constants in code** (doses, tax rates, retention periods, cable sizes): the primary source is the domain authority (for example Farmacotherapeutisch Kompas / NHG, Belastingdienst, NEN / IEC), not the library documentation.
+- **The core of the wish counts as Impact**, even if it is very uncertain. If the wish is "pick the right rate per category", the category mapping is a P1-P5 point.
+- **Verdict on a plan.** The "verdict on the original output" here describes the current state of the project. `DO NOT USE` means "do not build on this as is", it does not stop the planning; the corrections go into the plan.
+- **State assumptions** the audit needed (jurisdiction, year, target group) in one line, and ask when the answer would change the verdict.
+- **Small wishes.** Prefer sub-claims of the wish itself (the number, the unit, the condition, the exception) over filler about the rest of the project; mention what you left out of scope.
+
+## High-stakes wishes (health, safety, law, money)
+
+- Put the verdict cap and the professional or primary source that must confirm each Impact point that is only 🟡 in the plan: under Starting point (Unverified) and under Risks and open points.
+- Make that confirmation an acceptance criterion or explicitly Out, never silently skipped.
+- An Impact error with a safety consequence in code that is already in use (a wrong dose, a too thin cable) is a separate bug item proposed in the grill, so it is not buried inside the new feature.

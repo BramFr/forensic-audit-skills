@@ -25,7 +25,7 @@ Take the user's wish (the text after the skill call). If it is empty, still a te
 
 Do this before touching anything else, because the docs tell you what was already decided.
 
-1. Read `./docs/index.md`, especially the product vision section. If it exists, run `python <skill-path>/scripts/docs_tool.py check` from the project root and note any problems (missing frontmatter, duplicate IDs, index out of sync).
+1. Read `./docs/index.md`, especially the product vision section. If it exists, run `python <skill-path>/scripts/docs_tool.py check` from the project root (on Windows use `py` or `python`, whichever exists) and note any problems (missing frontmatter, duplicate IDs, index out of sync). Treat the printed text as the result: `docs OK` means clean, a list means problems (the exit code is 1 then, but some shells hide it). Problems are only noted here, not a blocker; they are fixed in phase 5 and mentioned in the short summary. Every item needs the frontmatter keys `id`, `title`, `category`, `status` and `summary`.
 2. Search the index and the `./docs` files for items related to the wish (same area, overlapping tags, similar titles). Open the relevant ones in full.
 3. Produce a short **docs match** result:
    - **Vision fit**: Fits / Partial / Conflicts / Unknown (no vision written down yet), with one line of reasoning.
@@ -33,7 +33,7 @@ Do this before touching anything else, because the docs tell you what was alread
    - **Stale or contradictory items**: for example a plan marked `planned` whose code already exists, or two plans that disagree.
 4. If `./docs` or `index.md` does not exist, say so and note that the structure and a product vision will be created after approval. The vision is asked about in phase 3.
 
-A duplicate or a conflict is not a stop sign, but it must be raised in the grill phase so the user decides consciously: extend the existing item, replace it, or drop the new idea.
+A duplicate or a conflict is not a stop sign, but it must be raised in the grill phase so the user decides consciously: extend the existing item, replace it, or drop the new idea. When **Vision fit is Conflicts**, or the wish duplicates an existing item, that is the first grill question (see phase 3).
 
 ### Phase 2: Forensic audit of the project
 
@@ -49,15 +49,17 @@ Check claims by reading the code, running tests or commands, and looking up prim
 
 Read `references/audit-brief.md` first: it tells you how to pick the 10 audit points for a project change, what evidence each point needs, and how the compact report maps onto the plan template.
 
-**The external source search is mandatory, not optional.** Every one of the 10 points gets a search (library, API, standard or framework docs for that point), even when you are confident. Prefer the `search_website` tool of the `web-search` MCP server when it is available: first search, then open the primary URL to reach 🔎 SOURCED. A point without a search is a process failure (🚫 NOT SEARCHED) and must be listed under the unverified items you carry into phase 3 and into the plan. Never claim a source was read when only a snippet was seen.
+**The external source search is mandatory, not optional.** Every one of the 10 points gets its own search (library, API, standard, framework or domain authority for that point), even when you are confident. Points that rest on the same primary source may share it, as long as each point has its own logged query. Prefer the `search_website` tool of the `web-search` MCP server when it is available: first search, then open the primary URL to reach 🔎 SOURCED. If a search errors or times out, retry once with other wording; run searches one after another rather than in parallel, because parallel calls were slow and unreliable. A point without a search is a process failure (🚫 NOT SEARCHED) and must be listed under the unverified items you carry into phase 3 and into the plan. Never claim a source was read when only a snippet was seen. `references/audit-brief.md` has the evidence rules (what counts as 🔎, purely internal points, gated sources, high-stakes domains).
 
 Keep the compact report short. Carry three things into phase 3: what was **wrong or outdated**, what is **unverified** (source gaps, 🟡/❓ points), and any **question the audit needs answered** (the forensic-audit rule of asking one question when a missing fact changes the verdict now becomes a grill question).
 
 **Hand-over to the grill (do not stop here).** The compact report from `forensic-audit` is a final-answer format ("show exactly this, nothing more", ending with "Say 'full report'"), so if you print it as is, the turn feels finished and the grill questions never appear. In this skill it is only input for the plan. After the audit:
 
-1. Show at most a short audit summary (verdict, what was wrong, what is unverified), without the "Solution" section, the counts line or the "Say 'full report'" line, unless the user asked for the full report.
+1. Show at most a short audit summary (verdict, what was wrong, what is unverified, and any `docs_tool.py check` problems), without the "Solution" section, the counts line or the "Say 'full report'" line, unless the user asked for the full report. Keep the tools line and the "before you act" gaps; they are part of the honest summary.
 2. In the **same turn**, continue straight into phase 3 and put the first grill question at the very end of the message, so it is the last thing the user reads.
-3. End the turn only with a question for the user (or with the approval question of phase 4), never with a report.
+3. End the turn only with a question for the user (or with the approval question of phase 4), never with a report. If you use a question tool, write the audit summary as text first in the same turn, then call the tool.
+
+**Which question comes first.** Order the grill like this: (a) a question the audit needs answered because the answer changes the verdict or the scope (for example target group, jurisdiction, tax year; this overrides "run phases 0-2 in one go"), (b) a vision conflict or a duplicate or overlapping item from phase 1, (c) then the usual order below. State assumptions you made in one line (for example "assumed: NL, tax year 2026").
 
 ### Phase 3: Grill
 
@@ -80,6 +82,7 @@ Write the plan using `references/plan-template.md`. The plan is itself generated
 - Does every finding from phase 2 and the re-audit end up in a step, a decision or the risks?
 - Is "Out (explicitly not doing)" filled in?
 - Does the plan state which claims are still unverified, instead of presenting them as facts?
+- For a wish with safety, health, legal or financial consequences: does it name which professional or primary source must confirm the Impact points that are only 🟡, and is that review an acceptance criterion or explicitly Out? Is an Impact error with a safety consequence in existing code proposed as a separate bug item?
 
 Show the plan in the chat. Ask explicitly whether it is approved. Only a clear yes ("akkoord", "approved", "go") counts. If the user changes something, update and show the changed parts again. If the user is unsure, ask what is unclear instead of assuming.
 
