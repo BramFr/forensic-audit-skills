@@ -19,6 +19,7 @@ AI-generated output tends to look right without being right:
 |-------|-----------|-----------|
 | [**forensic-audit**](skills/forensic-audit/SKILL.md) | Audit and fact-check any AI-generated output (code, plans, recipes, contracts, calculations, advice) | Fake green, silent assumptions, outdated or unsafe advice |
 | [**forensic-site-audit**](skills/forensic-site-audit/SKILL.md) | Crawl a website or web app, test every feature against the live backend, capture and judge screenshots | Brittle tests, missing evidence, untested pages, UX defects |
+| [**docs-first-planner**](skills/docs-first-planner/SKILL.md) | Turn a wish, feature or bug into an audited, approved plan stored in `./docs` (docs check, forensic audit, grill, plan, persist) with `scripts/docs_tool.py` for numbering, index and checks | Vibe coding: unverified beliefs, duplicate or contradicting features, lost rationale |
 | [**mcp/web-search**](mcp/web-search/README.md) | Single-tool MCP server (`search_website`): DuckDuckGo search (`🔍 SNIPPET`) + untruncated HTML/PDF to Markdown (`🔎 SOURCED`), no API keys | Unopened primary sources, unreadable PDF datasheets/standards, paid search API lock-in |
 
 Both skills run **in a single request**, with no mid-way questions, and report **conclusions only**.

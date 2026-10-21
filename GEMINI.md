@@ -4,10 +4,11 @@
 
 ## Skills
 
-This extension ships two agent skills in `skills/`. Gemini loads them on demand when the request matches their description:
+This extension ships three agent skills in `skills/`. Gemini loads them on demand when the request matches their description:
 
 - `forensic-audit`: audit and fact-check any AI-generated output.
 - `forensic-site-audit`: crawl a web app, test every feature against the live backend, capture and judge screenshots.
+- `docs-first-planner`: turn a wish, feature or bug into an audited, approved plan stored in `./docs` (uses `forensic-audit` in its audit phase).
 
 ## Companion MCP Server (`mcp/web-search`)
 
