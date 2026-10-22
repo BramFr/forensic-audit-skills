@@ -6,5 +6,5 @@
     "name": "BramFr"
   },
   "license": "MIT",
-  "keywords": ["audit", "fact-check", "e2e", "playwright", "visual-testing", "zero-trust", "skills"]
+  "keywords": ["security", "audit", "fact-check", "e2e", "playwright", "visual-testing", "zero-trust", "skills"]
 }

@@ -1,6 +1,6 @@
 ---
 name: docs-first-planner
-description: Turn a wish, feature idea or bug into an audited, approved plan that is stored in ./docs and indexed in ./docs/index.md. Runs the docs check, a forensic audit of the project, a grill-me interview and a plan, in that order, and only writes to ./docs after the plan is approved. Use this whenever the user wants to plan, scope or start a new feature, bug fix, refactor or change in a project, says "plan", "feature", "bug", "grill me", "audit first", "check the docs", mentions vibe coding problems, or wants to know whether an idea fits the product or already exists in ./docs, even if they do not name this skill.
+description: Turn a wish, feature idea or bug into an audited, approved plan that is stored in ./docs and indexed in ./docs/index.md. Runs the docs check, a forensic audit of the project, a grill-me interview and a plan, in that order, and only writes to ./docs after the plan is approved. Use this whenever the user wants to plan, scope or start a new feature, bug fix, refactor or change in a project, says "plan", "feature", "bug", "grill me", "audit first", "check the docs", mentions vibe coding problems, or wants to know whether an idea fits the product or already exists in ./docs, even if they do not name this skill. Also use it, and switch automatically to the security route (forensic-security-audit plus a security baseline in ./docs/security), whenever the wish is about security: a security scan, vulnerability check, secret or dependency check, hardening, threat model, pentest-style review or "is this secure?".
 ---
 
 # Docs-first planner
@@ -20,6 +20,8 @@ Run phases 0-2 in one go without asking permission between them. Phase 3 is inte
 ### Phase 0: Intake
 
 Take the user's wish (the text after the skill call). If it is empty, still a template placeholder such as "[mijn wens / vraag]", or too vague to name an area of the project, ask one short question and stop. Make a first guess at the category (bug, feature, or something else such as refactor, chore, research) and name the area of the project it touches. You may revise both later.
+
+**Security route.** If the wish is about security in any form (scan, vulnerabilities, secrets, dependencies, hardening, access control, threat model, compliance-driven security work, or a feature whose main risk is security), set the category to `security` and follow the security route for the rest of the flow, without asking the user to name the skill. The differences are marked "Security route" in phases 2, 4 and 5. Ask in phase 3 for the scope (what may be read and tested) if the wish did not name it. A normal feature or bug that merely touches security-sensitive code stays on the normal route, but phase 2 then also uses `forensic-security-audit` for the security-relevant points.
 
 ### Phase 1: Docs check (every invocation)
 
@@ -46,6 +48,8 @@ The subject of the audit is the **current state of the project around the wish**
 - the assumptions hidden in the user's own wish (for example "the login already supports X").
 
 Check claims by reading the code, running tests or commands, and looking up primary sources for libraries, APIs and standards, rather than trusting names, comments or earlier docs. Scope it to what the wish touches; auditing the whole repository is slow and drowns the findings.
+
+**Security route.** Use the `forensic-security-audit` skill instead (read its SKILL.md and follow it, phases 0 to 3, in COMPACT mode; do not apply fixes yet, they become steps of the plan). It may call `forensic-audit` to check claims along the way. If `forensic-security-audit` is not available, do a lighter version yourself: map entry points and trust boundaries, check secrets, dependencies, configuration, authentication and authorization and injection, prove findings by running something where possible, rate severity, and report what was not verified. The scope is what the user named (everything inside it may be read and tested; nothing outside it). The 10-point rule is replaced by the findings and the coverage line of that skill, but the search per finding and the labels stay mandatory. Mask secrets everywhere, including in the plan.
 
 Read `references/audit-brief.md` first: it tells you how to pick the 10 audit points for a project change, what evidence each point needs, and how the compact report maps onto the plan template.
 
@@ -76,7 +80,7 @@ Interview the user until the plan is unambiguous. If a `grill-me` skill is avail
 
 ### Phase 4: Plan and approval
 
-Write the plan using `references/plan-template.md`. The plan is itself generated output, so run this short **plan check** before showing it and fix what fails:
+Write the plan using `references/plan-template.md`. On the **security route** use `references/security-plan-template.md` instead (findings table, fix steps with re-test criteria, and the security baseline). The plan is itself generated output, so run this short **plan check** before showing it and fix what fails:
 
 - Is every acceptance criterion checkable (a command, a test or an observable result), not a wish?
 - Does every finding from phase 2 and the re-audit end up in a step, a decision or the risks?
@@ -94,6 +98,7 @@ Show the plan in the chat. Ask explicitly whether it is approved. Only a clear y
 4. **Update related docs**: add `related` links in both directions, set replaced items to `superseded` with a pointer to the new one, fix stale statuses found in phase 1, and put the product vision into `index.md` if it was missing or changed in the grill.
 5. **Regenerate the index**: run `python <skill-path>/scripts/docs_tool.py index`. It rebuilds the table in `./docs/index.md` from the frontmatter of every item, so the index cannot drift from the files. Never edit the table by hand; edit the item's frontmatter and regenerate.
    Use `index --strict` when you want the index to be refused if the item files have problems. Afterwards run `python <skill-path>/scripts/docs_tool.py check` once more and report its result (on Windows use `py` or `python`, whichever exists).
+   **Security route.** Besides the plan, create or update the **security baseline** `./docs/security/NN-security-baseline.md` (reuse the existing one if present; there is only one). It holds the project's standing security rules, derived from verified findings and the user's decisions, so later AI work respects them (format in `references/security-plan-template.md`). Link the plan and the baseline to each other with `related`. Add 2 to 4 lines to `index.md` under the product vision, titled "Security rules for AI", that point to the baseline (the docs tool only regenerates the table, so these lines stay). Never write secrets, even masked beyond a few characters, into any doc. A finding that is only ❓ or 🟠 goes in as unverified, never as fact.
 6. **Report** in a few lines: the path of the new plan, its index row, which other docs changed, and the first concrete step to take. Suggest referencing the plan ID (for example `feature/01`) in commit messages and branch names so code stays traceable to the plan.
 
 ## Later invocations: status updates
@@ -106,3 +111,5 @@ When the user says an item is started, done, dropped or replaced, update its `st
 - Do not invent product goals. If the vision is unknown, ask.
 - Keep the index to one line per item so it stays fast to search; detail belongs in the item file.
 - Do not start implementing after the plan is approved unless the user asks; hand over the plan and the first step.
+- **Security route:** when a security item is marked `done`, verify with the re-test from `forensic-security-audit` (the original proof must now fail, tests still pass) and note it under `## Verification`. A secret finding is not `done` until rotation is confirmed by the user. Update the security baseline when a decision changes.
+- Before any later feature or bug plan, read `./docs/security/` in phase 1 and make the plan respect the baseline, or raise the conflict in the grill.

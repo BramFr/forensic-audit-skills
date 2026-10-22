@@ -19,6 +19,7 @@ AI-generated output tends to look right without being right:
 |-------|-----------|-----------|
 | [**forensic-audit**](skills/forensic-audit/SKILL.md) | Audit and fact-check any AI-generated output (code, plans, recipes, contracts, calculations, advice) | Fake green, silent assumptions, outdated or unsafe advice |
 | [**forensic-site-audit**](skills/forensic-site-audit/SKILL.md) | Crawl a website or web app, test every feature against the live backend, capture and judge screenshots | Brittle tests, missing evidence, untested pages, UX defects |
+| [**forensic-security-audit**](skills/forensic-security-audit/SKILL.md) | Security audit of a codebase within a scope you name: find, prove, fix and re-test vulnerabilities, secrets, dependency and configuration risks; severity per finding, no hardcoded sources | Fake security, unverified "it is safe", leaked secrets, vulnerable dependencies |
 | [**docs-first-planner**](skills/docs-first-planner/SKILL.md) | Turn a wish, feature or bug into an audited, approved plan stored in `./docs` (docs check, forensic audit, grill, plan, persist) with `scripts/docs_tool.py` for numbering, index and checks | Vibe coding: unverified beliefs, duplicate or contradicting features, lost rationale |
 | [**mcp/web-search**](mcp/web-search/README.md) | Single-tool MCP server (`search_website`): DuckDuckGo search (`🔍 SNIPPET`) + untruncated HTML/PDF to Markdown (`🔎 SOURCED`), no API keys | Unopened primary sources, unreadable PDF datasheets/standards, paid search API lock-in |
 
@@ -33,6 +34,17 @@ Both skills run **in a single request**, with no mid-way questions, and report *
 3. **Closed loop per point**: baseline (BEFORE), simulation (AFTER), primary-source check, red-team falsification, repair with at most two rounds before fail-closed.
 4. **Evidence-based status**: ✅ confirmed, 🟡 plausible, 🔁 corrected, ⛔ fail-closed, ❓ unverified.
 5. **Honest hand-over**: two verdicts (original output and corrected version), confidence, source gaps, negative declaration and an execution protocol.
+
+### forensic-security-audit
+
+1. **Scope first**: only what you name is read and tested; secrets are masked and treated as compromised.
+2. **Attack surface map**: entry points, trust boundaries, assets and the dependency and build chain, discovered from the code.
+3. **Findings per category**: injection, authentication, authorization, secrets, dependencies, configuration, crypto, input/output, data protection, availability, AI/agent risks.
+4. **Proof**: each finding is reproduced where possible (🔴 proven), otherwise 🟠 likely or ❓ unverified, never counted as confirmed. Current standards and advisories are searched at runtime, not hardcoded.
+5. **Closed loop**: concrete fix, re-test of the original proof, at most two repair rounds before fail-closed.
+6. **Verdict** (SECURE ENOUGH / CONDITIONAL / NOT SECURE) with severity, confidence, coverage and source gaps.
+
+When you ask `docs-first-planner` for anything security related, it switches to this skill automatically, stores the plan under `./docs/security/` and keeps a security baseline there that later AI work must respect.
 
 ### forensic-site-audit
 
@@ -165,6 +177,7 @@ forensic-audit-skills/
 │       └── tests/test_server.py
 ├── skills/
 │   ├── forensic-audit/SKILL.md
+│   ├── forensic-security-audit/SKILL.md
 │   └── forensic-site-audit/SKILL.md
 ├── CLAUDE.md
 ├── CURSOR.md

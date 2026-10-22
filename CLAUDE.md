@@ -4,7 +4,7 @@ Behavioral guidelines for verifying AI-generated output and web applications. Me
 
 **Tradeoff:** These guidelines bias toward rigor over speed. For trivial tasks, use judgment.
 
-For the full procedures, see `skills/forensic-audit/SKILL.md` and `skills/forensic-site-audit/SKILL.md`.
+For the full procedures, see `skills/forensic-audit/SKILL.md`, `skills/forensic-security-audit/SKILL.md` and `skills/forensic-site-audit/SKILL.md`.
 
 ## 1. Zero-Trust Baseline
 
