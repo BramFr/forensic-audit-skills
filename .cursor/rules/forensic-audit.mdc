@@ -28,3 +28,8 @@ Behavioral guidelines for verification work. Merge with project-specific instruc
 ## 5. Compact, Honest Reporting
 - Conclusions only, one line per step, tables over prose.
 - Always state what could not be verified. Cite primary sources.
+
+
+## 6. Diagnose Before You Fix
+- Follow seven steps in any domain: Discover (derive subject and search live for the governing standard/authority; for paywalled ISO/NEN, name it and open its free open primary counterpart), Quote (mask secrets), Signal (first deviation at origin), Guard, Hypotheses (max 3 with a cheap test), Fix, Confirm.
+- Satisfy a guard, never remove it. Where a wrong fix risks injury, harm, fire, legal breach or irreversible loss, refer to a qualified professional.

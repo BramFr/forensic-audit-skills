@@ -35,7 +35,7 @@ When the grill changes scope, approach or dependencies, audit only the new or ch
 
 - **🔎 holds per claim, not per page.** A page only counts as opened when you saw the text that proves or refutes that claim (grep the fetched output for it). A page that returned only navigation, a 404 text, an empty list or no mention of the claim is 🔍 at best.
 - **Secondary sources are 🔍.** A commercial or knowledge-base page, or a primary source seen only through someone else's quote (for example a drug compendium quoting a guideline), never gives 🔎 for the original claim.
-- **Gated or blocked primary sources** (paid standards such as NEN, HTTP 401/403 after one retry with another primary URL): 🔍 plus "primary gated" in the source gaps; the point is at most 🟡 and never ✅.
+- **Gated or blocked primary sources** (paid standards such as ISO, NEN or IEC, or HTTP 401/403 after one retry): always name the formal standard (identifier + title) AND search for its free **open primary counterpart** (the law or regulation referencing it on `wetten.overheid.nl` or `eur-lex.europa.eu`, public standards/regulators such as NIST, UNECE, NCSC, OWASP, NVWA, RDW, NHG or LICG, or the official manufacturer datasheet/manual). If the open primary counterpart proves the claim, record both and mark 🔎 SOURCED; if neither can be opened, record 🔍 plus "primary gated" in the source gaps (at most 🟡, never ✅).
 - **No primary source exists** (for example typical brake-pad lifetime in km): ⚠️ NO SOURCE FOUND, status 🟡 or ❓, listed under Unverified in the plan. Do not upgrade it with marketing pages.
 - **Purely internal points** (does the feature already exist, what does a docs item claim, does the import work): evidence is `file:line` or the output of a command (⚙️), and an external search is not forced. Not all 10 points may be internal; pick points that can be checked externally for the rest.
 - **Domain constants in code** (doses, tax rates, retention periods, cable sizes): the primary source is the domain authority (for example Farmacotherapeutisch Kompas / NHG, Belastingdienst, NEN / IEC), not the library documentation.
@@ -49,3 +49,9 @@ When the grill changes scope, approach or dependencies, audit only the new or ch
 - Put the verdict cap and the professional or primary source that must confirm each Impact point that is only 🟡 in the plan: under Starting point (Unverified) and under Risks and open points.
 - Make that confirmation an acceptance criterion or explicitly Out, never silently skipped.
 - An Impact error with a safety consequence in code that is already in use (a wrong dose, a too thin cable) is a separate bug item proposed in the grill, so it is not buried inside the new feature.
+
+## Wishes that contain a failure
+
+- A pasted error, log or symptom is evidence that it happened; the explanation of it is a hypothesis. Discover the domain and governing standard/authority via live search (`search_website`), quote the failure, find the decisive signal at its origin (not the wrapper), and make the root cause a P1-P5 point with its own primary-source and runtime check.
+- Check whether the failure is a deliberate guard. If it is, the fix satisfies the guard and the plan must not weaken it.
+- Hand the result over under Starting point (Verified, Corrected, Unverified) and as the Observed error and Root cause sections of a bug plan.

@@ -110,6 +110,15 @@ On deviation choose the recovery archetype: *System Adjustment/Redesign*, *Limit
 - **Path B: 100% APPROVED**: assign `[VERIFIED_PASS]` and **CONTINUE AUTOMATICALLY**.
 - **Circuit breaker**: the same error three times in a row, or 10 attempts without progress → take a fundamentally different route; after that `⛔ FAIL-CLOSED` and report honestly.
 
+**Diagnosing a failure (when a test, console, network call or server log shows an error).** Do not retry or patch blindly; follow the seven steps of `forensic-audit` Principle 6, applied to a web application:
+1. **Discover**: identify the framework, component, protocol and standard from the repo and runtime inventory, then search live (`search_website` preferred: search first, then open the primary URL for 🔎 SOURCED) for the error and governing specification (W3C WCAG/WAI-ARIA, WHATWG, IETF HTTP/token RFCs, OWASP ASVS, or official framework/browser docs; if a formal ISO/NEN/EN standard is gated, name it and open its free **open primary counterpart** such as W3C/WCAG or RFC).
+2. **Quote** the failure verbatim (console line, failed request with method, URL and status, server log line, test output), secrets masked.
+3. **Signal**: find the first failing event at its origin, not the downstream symptom that followed. Classify it as **test defect** (selector, timing, schema-violating test input, hardcode violation), **product defect** or **environment defect** (service down, missing config, expired session).
+4. **Guard**: check whether a 401, 403, 422, validation message or disabled control is a deliberate guard. If so, satisfy it with valid role or schema-derived data; never remove the guard or loosen the test.
+5. **Hypotheses**: at most 3 candidate causes, each with a cheap test (replay the request, query the database, inspect the backend log, test another viewport).
+6. **Fix**: change the code, test data derivation or configuration at the root cause (never the test threshold or timeout) and state what it changes.
+7. **Confirm**: re-run from STEP 1 on this point, capture new screenshots, and verify that the original console/network error is gone and the guard still holds.
+
 **Phase 2 report format** (one table for all 10 points):
 
 | # | Type | BEFORE | AFTER | Source | Red-team | Screenshots | Status |

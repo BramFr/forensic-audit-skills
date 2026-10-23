@@ -46,13 +46,14 @@ Never skip steps in COMPACT mode. Shorter output, not shallower work.
 
 **7. Always search for external sources and report honestly what was found.** Standards, weakness catalogues, advisories and secure-configuration guidance change. Check once, before starting, which tools you have (web search or the `search_website` MCP tool, code execution, file access, dependency or secret scanners already installed in the project). Prefer `search_website` when available: search first, then open the primary URL to reach 🔎 SOURCED. Never claim a source was read when only a snippet was seen. Do not rely on a fixed list of links from memory; find the current version of the relevant standard yourself.
 
-**8. When something goes wrong, diagnose before you fix.** If the user shares a failure (an error, log, stack trace, a refused start, a blocked request, a failed login or deploy), follow the same six steps as `forensic-audit` Principle 6, applied to security:
-1. **Quote** the failure verbatim, with secrets masked (never repeat a secret in full, even if it appears in the log).
-2. **Signal**: the decisive line (error type and message, first frame in the project's own code), not the wrapper ("startup failed", "403").
-3. **Guard**: a refusal is often a deliberate fail-closed control (secret validation at startup, CSRF or auth check, certificate verification, a rate limit). Then the fix is to satisfy the control (supply a unique secret of the required strength, send the token, trust the right CA), never to disable, loosen or bypass it.
-4. **Hypotheses**: at most 3 causes, each with a cheap test (is the variable set, empty, too short or a known default? does the request carry the token? which certificate does the server present?).
-5. **Fix**: the concrete change plus who does it. Secrets are generated and stored by the user in the environment or secret manager, never pasted into chat, code or docs; a secret that appeared in a log or repository counts as compromised and is rotated.
-6. **Confirm**: re-run the same action; the control must still be active (re-test that a missing or weak value is still rejected) and the original failure gone.
+**8. When something goes wrong, diagnose before you fix.** If the user shares a failure (an error, log, refused start, blocked action, failed authentication or deployment failure), follow the seven steps of `forensic-audit` Principle 6, applied to security:
+1. **Discover**: derive the stack, component, protocol and regime from the scope and project files, then search live (`search_website` preferred: search first, then open the primary URL for 🔎 SOURCED) for the exact error and the governing security standard (formal standards such as ISO/IEC 27001, NEN, IEC or IETF RFCs; public authorities and standards such as NIST SP 800-series, NCSC, OWASP ASVS, CWE/CVE advisories; and official vendor/framework security docs). For paywalled standards (ISO/NEN), always name the standard AND open its free **open primary counterpart** (NIST, NCSC, OWASP, RFC or vendor advisory) for 🔎 SOURCED.
+2. **Quote** the failure verbatim, with secrets masked (never repeat a secret in full, even if it appears in the log).
+3. **Signal**: the first failing check or origin of the refusal, not the outer wrapper message that followed.
+4. **Guard**: check whether the refusal is a deliberate fail-closed control (startup secret validation, CSRF/auth check, certificate verification, rate limit, policy gate). If so, the fix is to satisfy the control, never to disable, loosen or bypass it.
+5. **Hypotheses**: at most 3 candidate causes, each with a cheap, safe test (for example checking variable presence or length without printing its value, inspecting token claims, or verifying certificate chains).
+6. **Fix**: the concrete change aligned with the security standard, plus who performs it. Secrets are generated and stored by the user in the environment or secret manager, never pasted into chat, code or docs; any secret that appeared in a log or repository counts as compromised and must be rotated.
+7. **Confirm**: re-run the action; confirm that the original failure is gone AND that the control still rejects a missing, weak or invalid value.
 
 ---
 

@@ -41,6 +41,7 @@ Numbered steps, each small enough to be done and checked on its own.
 ## Acceptance criteria
 Checkable statements. How we will know it works, including the edge cases agreed on.
 - [ ] ...
+  Check: `<command>` -> `<expected result>`
 
 ## Risks and open points
 - ...
@@ -49,7 +50,9 @@ Checkable statements. How we will know it works, including the edge cases agreed
 - Depends on / overlaps / supersedes: `bugs/02`, ...
 ```
 
-For bugs, replace "Why" with **Symptom, expected behaviour, how to reproduce** and add a **Root cause** line that states whether the cause is verified or still a hypothesis.
+**Check lines.** Under a criterion, an optional line `Check: <command> -> <expected result>` makes it re-checkable by the regression check of `SKILL.md`. Without a `Check:` line the criterion is manual: it stays open until a person confirms it and never counts as passed on its own. Use only safe, local, read-only commands appropriate to the project and domain (for example `docs_tool.py check`, `grep` / `Select-String`, `git status`, or side-effect-free validators and tests); never put secrets, production addresses or commands that write, delete or deploy in a `Check:` line.
+
+For bugs, replace "Why" with **Symptom, expected behaviour, how to reproduce** and add a **Root cause** line that states whether the cause is verified or still a hypothesis. Add an **Observed error** section with the failure text verbatim and masked, then the seven steps as lines: Discover (domain, subject, formal standard/authority and open primary source with 🔎/🔍/⚠️), Quote, Signal, Guard (is it a deliberate control that must stay?), Hypotheses (with the test per cause), Fix, Confirm (how the original failure is shown to be gone).
 
 ## Index format
 

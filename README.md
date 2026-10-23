@@ -152,6 +152,10 @@ Implement the missing login and settings pages and verify them visually.
 
 For site audits you can pass an optional **project context block** (goal, backend, UX and security requirements, acceptance criteria). It is read as parameters, never as selectors. See [EXAMPLES.md](EXAMPLES.md).
 
+When something has already gone wrong, share the evidence (an error message, a log, a failed bake, a part that does not fit). The skills discover the domain and governing standard via live search (law, ISO/NEN/IEC/RFC, regulator, manufacturer docs or guild standard — opening free primary counterparts when a formal standard is paywalled), find the decisive signal, check whether it is a deliberate guard, test the likely causes and give a verified fix. See [EXAMPLES.md](EXAMPLES.md), section 6. Each skill has its own variant of the same seven steps (Discover, Quote, Signal, Guard, Hypotheses, Fix, Confirm); keep the step names identical when editing.
+
+With `docs-first-planner`, acceptance criteria can carry a `Check: <command> -> <expected result>` line. The planner re-runs the safe, read-only ones of related `done` items before and after a change, marks a failing item `in-progress` and opens a bug item; anything that writes, deploys or touches the network is only run after your approval.
+
 Ask for **"full report"** or **"show audit trail"** to get the written-out analysis. The default is compact.
 
 ## Requirements (forensic-site-audit)

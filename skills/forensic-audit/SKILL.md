@@ -1,6 +1,6 @@
 ---
 name: forensic-audit
-description: Critically audit, fact-check and verify AI-generated output in any domain (code, recipes, designs, plans, calculations, advice, texts, contracts, data) for factual errors, outdated standards, unsafe or illegal advice and fake success. Use whenever the user wants something checked, reviewed, fact-checked, audited, validated or double-checked ("is this correct?", "check this", "can I trust this?", "is this safe?", "audit this", "fact-check this"), even if the word audit is not used, and always before anyone acts on AI advice with consequences for health, safety, money, law or anything irreversible.
+description: Critically audit, fact-check and verify AI-generated output in any domain (code, recipes, designs, plans, calculations, advice, texts, contracts, data) for factual errors, outdated standards, unsafe or illegal advice and fake success. Use whenever the user wants something checked, reviewed, fact-checked, audited, validated or double-checked ("is this correct?", "check this", "can I trust this?", "is this safe?", "audit this", "fact-check this"), even if the word audit is not used, and always before anyone acts on AI advice with consequences for health, safety, money, law or anything irreversible. Also use it when something has gone wrong and the user shares the evidence (an error message, log, stack trace, failed test, a failed bake, a part that does not fit, a pet that does not respond) and wants to know what is wrong and how to fix it ("it doesn't work", "why did this fail?", "what does this error mean?", "het werkt niet", "wat gaat hier fout?").
 ---
 
 # Forensic Audit (universal)
@@ -67,6 +67,18 @@ Rules:
 
 **5. Keep the report compact, but never at the expense of honesty.**
 Compactness never applies to warnings, source gaps, open points or a DO NOT USE verdict. These always appear, even in COMPACT mode.
+
+**6. When something goes wrong, diagnose before you fix.**
+If the input contains or describes a failure (any error, log, failed test, rejected result, or physical, chemical, biological or procedural failure), do not only judge it: find the cause from live primary sources and give a verified fix. Works in any domain; follow these seven steps in this order:
+1. **Discover.** Derive the domain, specific subject (product, material, species, language, protocol, make/model/version) and jurisdiction from the request and project files. If a missing fact would change the cause or standard, ask ONE concise question (Principle 1); otherwise state your assumption in one line. Then search live (`search_website` preferred: search first, then open the primary URL for 🔎 SOURCED) for both the meaning of the failure signal and the governing standard, using this universal source hierarchy: (a) law and formal standards (EU/national law, ISO, NEN, IEC, EN, UNECE, IETF RFC), (b) regulators and public authorities (such as NIST, NCSC, NVWA, RDW, NHG, EMA, OSHA), (c) primary manufacturer, specification or framework documentation (official manuals, datasheets, error tables, release notes), (d) accredited guild/trade guidelines and peer-reviewed science. **Two-step rule for paid standards (ISO/NEN/IEC):** always name the formal standard (identifier + title) AND, when its full text is paywalled, search and open its free **open primary counterpart** (the law or regulation referencing it, regulator guidance, public standard such as NIST/UNECE/OWASP, or official manufacturer datasheet) to reach 🔎 SOURCED.
+2. **Quote.** Copy the failure signal verbatim (mask secrets). The signal is evidence; your explanation of it is a hypothesis.
+3. **Signal.** Identify the decisive signal: the first observable deviation at the point where it originates, not the final symptom or wrapper message that followed.
+4. **Guard.** Check against the primary source whether the failure is a deliberate guard (validation, safety interlock, type approval, normative limit, or rule of the craft). If so, the fix is to satisfy the guard, never to remove, loosen or bypass it.
+5. **Hypotheses.** List at most 3 candidate causes, each with a cheap test (an inspection, measurement, lookup, command or controlled trial). Run the test where you can; otherwise name the exact test the user should run. Do not guess.
+6. **Fix.** Give the concrete fix aligned with the primary source and say what it changes. If it requires a secret, personal credential or irreversible action, state what the user must do themselves; never ask them to paste secrets.
+7. **Confirm.** State how to verify against the standard or baseline that the original failure is gone and that any guard still rejects invalid input or conditions.
+
+Assess consequence severity dynamically: whenever a wrong diagnosis or fix could cause physical injury, illness, animal harm, fire, structural or environmental damage, legal breach, major financial loss or irreversible harm, the fix is "stop and have a qualified professional (named from the governing standard or authority) perform or sign off the work"; give the hypotheses only as background.
 
 ---
 
@@ -143,6 +155,7 @@ Show exactly this, nothing more. Keep it short: aim for roughly one screen. Use 
 3. **Solution / answer to your question**: the corrected, ready-to-use answer to what the user originally asked (the fixed code, recipe, calculation, plan, text, advice, with the right numbers and limits). This is the main part of the report. If the verdict on the corrected version is `DO NOT USE`, say so here and give the safe alternative or who to ask instead of a usable answer.
 4. **What was wrong** (max. 5 bullets): only the deviations that were found and fixed, one line each, with the key source (organisation + standard/URL) and its status label (🔎/🔍). If nothing was wrong: "No deviations found."
 5. **Before you act** (max. 5 bullets): conditions, assumptions, and the honest gaps: any ⚠️/🚫/🟡/❓ point in one line each (point number + why), failed URLs, and which professional or source should confirm Impact points that are only 🟡. Never leave out a gap to save space.
+5b. **Diagnosis** (only when the input contains a failure, see Principle 6): one block `Symptom | Root cause (verified or hypothesis) | Fix | Confirm | Source (standard/authority + 🔎/🔍/⚠️)`, placed before "What was wrong". Keep it to 5 lines.
 6. **Source gaps** line (see rules above) and one counts line: `✅ x · 🟡 x · 🔁 x · ⛔ x · ❓ x | 🔎 x · 🔍 x · ⚠️ x · 🚫 x | corrections: x | date`.
 7. **Limitation note** (one line): this audit reduces risk but does not replace sign-off by a qualified professional where health, safety, law, money or irreversible actions are involved.
 8. **Last line**: "Say 'full report' for the complete 10-point audit trail."

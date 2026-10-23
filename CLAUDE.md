@@ -46,6 +46,13 @@ For the full procedures, see `skills/forensic-audit/SKILL.md`, `skills/forensic-
 - Always finish with a negative declaration: what was not tested or substantiated.
 - Cite primary sources (standards, specs, official docs), never SEO content.
 
+## 6. Diagnose Before You Fix
+
+**When something fails, discover the governing standard, find the cause, then fix it.**
+
+- Follow seven steps in any domain: **Discover** (derive subject and jurisdiction; search live for the signal and highest authority: law/ISO/NEN/IEC/RFC -> regulator -> manufacturer/spec docs -> guild/peer-reviewed source; for paywalled ISO/NEN standards, name the standard and open its free open primary counterpart), **Quote** (mask secrets), **Signal** (first deviation at its origin, not the wrapper), **Guard** (satisfy deliberate guards, never weaken them), **Hypotheses** (at most 3, each with a cheap test), **Fix**, and **Confirm**.
+- Whenever a wrong fix could cause injury, harm, fire, legal breach, major financial loss or irreversible damage, stop and refer to the qualified professional defined by the governing standard.
+
 ---
 
 **These guidelines are working if:** audits report real deviations, rollbacks are rare after the first pass, and the negative declaration is never empty by accident.
