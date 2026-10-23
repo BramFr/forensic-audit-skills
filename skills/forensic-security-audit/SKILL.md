@@ -1,6 +1,6 @@
 ---
 name: forensic-security-audit
-description: Security audit of a codebase or repository, scoped to what the user points at. Reads, reasons about and (within the agreed scope) actively tests for vulnerabilities, leaked secrets, vulnerable or malicious dependencies, insecure configuration, weak authentication or authorization, unsafe AI/agent behaviour and other security risks, proves each finding with evidence, proposes concrete fixes, applies them with approval and re-tests. Use whenever the user wants a security scan, security review, vulnerability check, hardening, pentest-style review, secret scan, dependency check, threat model or asks "is this secure?", "is this safe to deploy?", "can this be exploited?", even if the word audit is not used. Also used by docs-first-planner whenever the wish is about security.
+description: Security audit of a codebase or repository, scoped to what the user points at. Reads, reasons about and (within the agreed scope) actively tests for vulnerabilities, leaked secrets, vulnerable or malicious dependencies, insecure configuration, weak authentication or authorization, unsafe AI/agent behaviour and other security risks, proves each finding with evidence, proposes concrete fixes, applies them with approval and re-tests. Asks the user (grill-me style) for missing context before starting. Use whenever the user wants a security scan, security review, vulnerability check, hardening, pentest-style review, secret scan, dependency check, threat model or asks "is this secure?", "is this safe to deploy?", "can this be exploited?", even if the word audit is not used. Also used by docs-first-planner whenever the wish is about security.
 ---
 
 # Forensic Security Audit
@@ -15,7 +15,7 @@ This skill reuses the evidence discipline of `forensic-audit` (source status lab
 
 ## Output modes
 
-The work (Phases 0 to 4) is ALWAYS done in full. Only the amount of text shown differs.
+The work (Phases 0 to 4) is ALWAYS done in full; Phase 5 is the report. Only the amount of text shown differs.
 
 **COMPACT (default).** Verdict, findings by severity with fix, honest gaps. See "Compact report".
 
@@ -27,9 +27,9 @@ Never skip steps in COMPACT mode. Shorter output, not shallower work.
 
 ## Principles
 
-**1. Scope first.** The user decides what is in scope (a folder, a repo, a service, a feature). Inside that scope you may read, reason and test. Never touch anything outside it: no scanning of other hosts, no reading unrelated files or accounts, no calls to third-party systems you do not own. If the scope is unclear, ask ONE concise question before starting.
+**1. Scope first.** The user decides what is in scope (a folder, a repo, a service, a feature). Inside that scope you may read, reason and test. Never touch anything outside it: no scanning of other hosts, no reading unrelated files or accounts, no calls to third-party systems you do not own. If the scope is unclear, ask in Phase 0 (see principle 2) before starting.
 
-**2. Ask only when a missing fact changes the verdict.** Examples: where it will run (internet-facing or internal), who the users are, what data it holds, the applicable regime (privacy law, sector rules). Otherwise state the assumption in one line and continue.
+**2. Ask before you start, then run in one go.** Questions are welcome, but only in Phase 0 (and in Phase 4 for approval of fixes). Ask about every missing fact that changes the verdict: scope, where it will run (internet-facing or internal), who the users are, what data it holds, the applicable regime (privacy law, sector rules), accepted risks, whether active testing is allowed. Use a grill-me style interview: one question at a time, each with your recommended answer, using the question tool when available; skip anything the code or `./docs` already answers. The "never ask" rule only applies once the scope is given and Phase 0 is complete: from Phase 1 to 3 do not pause for permission to continue; state minor assumptions in one line and list them under the open points.
 
 **3. Every earlier claim is a hypothesis.** "We sanitize input", "the endpoint is behind auth", "this key is only for testing" are not evidence. Verify in code, in config and by running it.
 
@@ -45,6 +45,14 @@ Never skip steps in COMPACT mode. Shorter output, not shallower work.
 - Do not exfiltrate, store or send found data anywhere.
 
 **7. Always search for external sources and report honestly what was found.** Standards, weakness catalogues, advisories and secure-configuration guidance change. Check once, before starting, which tools you have (web search or the `search_website` MCP tool, code execution, file access, dependency or secret scanners already installed in the project). Prefer `search_website` when available: search first, then open the primary URL to reach 🔎 SOURCED. Never claim a source was read when only a snippet was seen. Do not rely on a fixed list of links from memory; find the current version of the relevant standard yourself.
+
+**8. When something goes wrong, diagnose before you fix.** If the user shares a failure (an error, log, stack trace, a refused start, a blocked request, a failed login or deploy), follow the same six steps as `forensic-audit` Principle 6, applied to security:
+1. **Quote** the failure verbatim, with secrets masked (never repeat a secret in full, even if it appears in the log).
+2. **Signal**: the decisive line (error type and message, first frame in the project's own code), not the wrapper ("startup failed", "403").
+3. **Guard**: a refusal is often a deliberate fail-closed control (secret validation at startup, CSRF or auth check, certificate verification, a rate limit). Then the fix is to satisfy the control (supply a unique secret of the required strength, send the token, trust the right CA), never to disable, loosen or bypass it.
+4. **Hypotheses**: at most 3 causes, each with a cheap test (is the variable set, empty, too short or a known default? does the request carry the token? which certificate does the server present?).
+5. **Fix**: the concrete change plus who does it. Secrets are generated and stored by the user in the environment or secret manager, never pasted into chat, code or docs; a secret that appeared in a log or repository counts as compromised and is rotated.
+6. **Confirm**: re-run the same action; the control must still be active (re-test that a missing or weak value is still rejected) and the original failure gone.
 
 ---
 
@@ -64,6 +72,7 @@ Fail-closed on `ERROR:`: a fetch that returned an error never counts as 🔎. Op
 ## Phase 0: Scope and context
 
 1. Confirm the scope from the user's request (paths, components, branches). If the user pointed at nothing, ask.
+1b. Run the question round from principle 2 for all open facts. Do not start Phase 1 until the answers (or explicit "unknown, assume X") are recorded.
 2. Detect the stack by reading manifests and config (languages, frameworks, package managers, container and infrastructure files, CI definitions).
 3. Note the context that changes severity: exposure (internet, internal, local only), data sensitivity, users and roles, deployment target. State assumptions in one line.
 4. Check `./docs` if it exists (for example a security baseline or earlier security items) and treat it as hypotheses to verify, not facts.
@@ -84,41 +93,46 @@ Discover all of this at runtime from the code. Do not assume route names, framew
 
 ---
 
-## Phase 2: Find candidate findings
+## Phase 2: Dynamic Category Discovery & Topic Extraction
 
-Work through the categories that apply to the stack. For each, search the code and config, then record candidates with `file:line`.
+### Step 2.1: Live Internet Research for 15 Domain Categories
+Do NOT rely on hardcoded categories. Perform live web searches based on the specific project, stack, or question to discover **15 Domain-Specific Risk & Quality Categories** relevant to this subject.
 
-| Category | Look for (examples, not an exhaustive list) |
-| --- | --- |
-| Injection | SQL, NoSQL, command, template, LDAP, path traversal, unsafe deserialization, SSRF, XXE |
-| Authentication | weak or missing login protection, session and token handling, password storage, MFA gaps, default credentials |
-| Authorization | missing checks, broken object-level access, privilege escalation, trusting client-supplied roles or ids |
-| Secrets | keys, tokens, passwords in code, config, history, images, logs and CI variables |
-| Dependencies and supply chain | known-vulnerable versions, unpinned or typo-squatted packages, risky install scripts, unreviewed CI actions, base image age |
-| Configuration and infrastructure | debug mode, permissive CORS, missing security headers, open ports, public storage, over-broad cloud or container permissions, missing TLS |
-| Cryptography | home-made crypto, weak algorithms, static IVs or salts, insecure randomness, disabled certificate checks |
-| Input and output handling | missing validation, XSS, open redirects, unsafe file handling, unrestricted uploads, mass assignment |
-| Data protection and logging | personal data in logs or errors, verbose error messages, missing audit trail, excessive data exposure |
-| Availability | missing rate limits, unbounded resource use, algorithmic complexity, unsafe regular expressions |
-| AI and agent risks (when the project uses LLMs or agents) | prompt injection, untrusted content reaching tools, over-privileged tools, secrets in prompts, unsafe use of model output as code or commands, missing human approval for risky actions |
+*Examples of dynamic category sets generated by search:*
+- **Automotive/Tuning**: Aerodynamics, ECU Calibration, Brake Bias, Tire Compound, Thermal Management, Suspension Geometry, Transmission Ratios, Frame Rigidity, Emissions Compliance, Fuel Delivery, Turbo Boost Limits, Exhaust Backpressure, Weight Distribution, Active Safety, Structural Fatigue.
+- **Software/IT**: Injection, Authentication, Authorization (BOLA), Secrets Leakage, Supply Chain Dependencies, Infra Configuration, Cryptography, Input/Output Sanitization, Data Privacy & Logging, Availability/Rate Limiting, LLM/Agent Tool Safety, Async Race Conditions, State Management, Memory Leaks, Network Isolation.
 
-Use installed scanners if they exist and are in scope, but treat their output as hypotheses: verify each hit and look for what the tool cannot see (logic flaws, authorization, business rules). A clean scanner run is not a pass.
+### Step 2.2: Extract 10 Critical Audit Topics
+From the 15 dynamically discovered categories, select **EXACTLY 10 Project-Specific Audit Topics** ($\text{T}_1 \dots \text{T}_{10}$):
+- **5 High-Impact Topics ($\text{T}_1 \dots \text{T}_5$)**: Topics where failure causes immediate system crash, severe safety hazards, legal non-compliance, or major financial loss.
+- **5 High-Uncertainty / High-Risk Topics ($\text{T}_6 \dots \text{T}_{10}$)**: Topics relying on unverified assumptions, outdated methods, high complexity, or greatest risk of "Fake Green" illusions.
+
 
 ---
 
-## Phase 3: Prove each finding
+## Phase 3: Closed-Loop Execution & Rollback Loop (Per Topic)
 
-For every candidate, do the five steps internally:
+Execute the following 5-step loop sequentially for each of the 10 topics ($\text{T}_1 \dots \text{T}_{10}$):
 
-**Step 1: Baseline.** The exact vulnerable condition, who can reach it, what they gain, what the preconditions are.
+### STEP 1: ZERO-TRUST BASELINE ("BEFORE" STATE)
+- **Forensic Self-Analysis**: Deconstruct implicit assumptions, record the exact baseline state (code/DOM state, chemical/physical parameters, structural constraints), and define the expected delta and potential failure modes.
 
-**Step 2: Reproduce.** Pick the archetype that fits: a failing automated test, a crafted request against a local instance, a script that demonstrates the flaw with a harmless canary, a dependency version check against an advisory, a secret check (is it valid? only check validity when allowed, never use it beyond that). Record the result with the method label.
+### STEP 2: DYNAMIC ACTIVATION & SIMULATION ("AFTER" STATE)
+- **Execution & Simulation**: Determine the appropriate activation archetype (Physical/Thermal calculation, Digital Runtime execution, Workflow/Logistics simulation, Quantitative/Normative formula test, or Adversarial Stress Test) and record the concrete "AFTER" outcome.
 
-**Step 3: Primary source check.** Look up the weakness class and, for dependencies, the advisory (affected and fixed versions). Open the primary URL. Note source + identifier + status label.
+### STEP 3: LIVE PRIMARY SOURCE SEARCH
+- **Web Search**: Perform targeted live web searches for the latest industry standards, regulations, manufacturer datasheets, RFCs, and peer-reviewed research.
+- **Mandatory Filter**: Consult at least 10 distinct, independent, authoritative primary sources per audit in total, of which at least 5 per High-Impact topic (T1-T5) and at least 2 per High-Uncertainty topic (T6-T10). A source may support several topics but counts once in the total. Apply the source status labels honestly; never pad the count with unopened or irrelevant sources. Commercial blogs, marketing fluff, and unverified forum posts are strictly rejected.
 
-**Step 4: Severity.** Rate Critical / High / Medium / Low from impact, exploitability and reachability in this context. State the reason in one line. A flaw that is not reachable is lower, but say so and say why.
+### STEP 4: RED-TEAMING DISCONFIRMATION TEST & NORM MATCHING
+- **Falsification Probe**: Execute explicit queries searching for known vulnerabilities, failure mechanisms, deprecated methods, or regulatory bans associated with the proposed solution.
+- **Match Outcome**: Compare the "BEFORE" baseline and "AFTER" simulation directly against the verified standards from Step 3.
 
-**Step 5: Red-team the finding and the fix idea.** Try to disprove it (is it really reachable? is there a mitigation elsewhere?) and try to bypass your own proposed fix.
+### STEP 5: FAIL-CLOSED FIX & FULL ROLLBACK TO STEP 1
+- **IF MISMATCH / DEPRECATED / UNHEALTHY OUTCOME DETECTED**:
+  1. Design the fix using one of the 5 Repair Archetypes (Refactoring, Boundary Tightening, Component Substitution, Recalibration, or Fail-Closed Fallback). Apply it to the project only after approval in Phase 4 (or, in docs-first-planner mode, record it as a plan step); until then verify it on a scratch copy or by reasoning and label the method honestly.
+  2. **HARD ROLLBACK TO STEP 1**: Re-initialize the baseline and re-run the entire 5-step loop for this topic. Maximum 5 rollback iterations per topic; if it still does not pass, set it to FAIL-CLOSED instead of looping further.
+- **IF 100% VERIFIED**: Assign `[VERIFIED_PASS]` (equivalent to NO FINDING, or FIXED with EXECUTED or SOURCED evidence; a topic resting only on REASONED, SNIPPET, NO SOURCE FOUND or NOT SEARCHED can never be `[VERIFIED_PASS]`) and automatically proceed to the next topic.
 
 ### Finding status
 
@@ -133,14 +147,30 @@ For every candidate, do the five steps internally:
 
 ---
 
-## Phase 4: Fix and re-test (closed loop)
+## Phase 4: Fix & re-test (with approval)
 
-1. Propose a concrete fix per finding (the code or config change, not advice), and say what it breaks if anything.
-2. Apply fixes only with the user's approval, unless the user has already said fixes may be applied. Never loosen a check, delete a test or weaken a threshold to turn a result green.
-3. Re-run the original proof and the project's own tests. A fix is 🔁 FIXED only when the proof that showed the flaw now fails and nothing else regressed.
-4. Same fix failing three times: change approach. After two failed repair rounds set the finding to ⛔ FAIL-CLOSED and report why.
-5. For found secrets: removal is not a fix. The fix is rotation plus removal from history where appropriate. State that rotation is the user's action when it cannot be done from here.
-6. If `forensic-audit` is available, use it to audit the fixes themselves (is the fix correct and complete? does it follow current guidance?).
+1. Present the findings that have a fix, ordered by severity, and ask the user which fixes to apply (grill-me style: one question at a time, with your recommendation). Apply nothing without approval. In docs-first-planner mode skip this phase (see the last section).
+2. Apply the approved fixes inside the agreed scope only. Prefer the smallest change that satisfies the control; never disable or loosen a guard.
+3. Re-test with the same proof that demonstrated the finding (EXECUTED): it must now fail, and other behaviour must still work. Set status FIXED only on that evidence. Max. 5 rounds per finding, then FAIL-CLOSED.
+4. Secrets that were found stay compromised: tell the user to rotate them; never paste new secrets into chat, code or docs.
+
+---
+
+## Phase 5: Forensic Attribution & Final Audit Report
+
+Deliver the report in COMPACT mode by default or FULL mode on request (see "Compact report" and "Full report"). The FULL report is organised into the following 6 sections; the quotation limit is 15 words everywhere:
+
+1. **Primary Evidence & Attribution Matrix**: Record all verified claims backed by primary source citations (Author/Organization, Standard Identifier/URL, and verbatim quotation of at most 15 words, only of what was actually read). No fabricated certainty percentages.
+2. **Red-Team Audit Log**: Transparent register of all tested failure modes and how the final solution neutralizes them.
+3. **Reconciliations of Conflicting Sources**: Explicit justification when authoritative sources conflict (e.g., newer EU directive vs. older national standard).
+4. **Negative Declaration & Unverified Scope**: Clear disclosure of any parameters that could not be fully verified due to missing raw data or simulation limits.
+5. **Actionable Implementation Protocol**: Step-by-step guidance equipped with strict Guard Clauses ("Do's & Don'ts").
+6. **Forensic Audit Seal**:
+   - **Overall Verdict**: the scale of the Verdict rules below (`SECURE ENOUGH` / `CONDITIONAL` / `NOT SECURE`), for the original and the fixed state
+   - **Dynamic Categories Researched**: 15 categories listed
+   - **Audited Topics**: 10 topics (5 High-Impact + 5 High-Uncertainty)
+   - **Total Primary Sources Cited**: [Number of sources]
+   - **Audit Date**: [Current Date]
 
 ---
 
@@ -150,7 +180,7 @@ For every candidate, do the five steps internally:
   - `SECURE ENOUGH`: no 🔴 or 🟠 finding of severity Critical or High; remaining findings are Medium or Low and listed.
   - `CONDITIONAL`: no 🔴 Critical or High; there are 🟠 or ❓ High or Critical findings that must be settled first (list them).
   - `NOT SECURE`: at least one 🔴 PROVEN Critical or High finding, or any Critical or High finding that is ⛔ FAIL-CLOSED.
-- **Verdict on the fixed version**: apply the same scale to the state after Phase 4. A 🔁 FIXED finding counts as resolved only when the re-test is ⚙️ EXECUTED. Any unresolved Critical or High that is 🔴, 🟠, ❓ or ⛔ gives `NOT SECURE` or `CONDITIONAL` as above.
+- **Verdict on the fixed version**: apply the same scale to the state after Phase 4 (Fix & re-test). A 🔁 FIXED finding counts as resolved only when the re-test is ⚙️ EXECUTED. Any unresolved Critical or High that is 🔴, 🟠, ❓ or ⛔ gives `NOT SECURE` or `CONDITIONAL` as above.
 - **Never `SECURE ENOUGH` on thin evidence.** If a whole category that applies was not checked, or an Impact area is ❓ or 🚫, the verdict is at most `CONDITIONAL` and the gap is named.
 - **Confidence**: High, Medium or Low, based on how much rests on ⚙️ and 🔎 versus 🧠, 🔍 and ❓. A 🚫 NOT SEARCHED on a Critical or High finding caps confidence at Low.
 - **Source gaps**: number of ⚠️ and 🚫 items with their numbers, or "none". If not "none", start the line with ⚠️.
@@ -191,6 +221,6 @@ Show: the attack surface map, the category checklist with the result per categor
 
 When `docs-first-planner` runs a wish that is about security, it uses this skill for its audit phase and persists the result as security items in `./docs/security/`. In that mode:
 
-- Run Phases 0 to 3 as the planner's audit. Do not apply fixes yet; they become the steps and acceptance criteria of the plan. Phase 4 runs when the plan is carried out.
+- Run Phases 0 to 3 as the planner's audit (merge the Phase 0 question round with the planner's own interview: never ask the same thing twice). Do not apply fixes yet; they become the steps and acceptance criteria of the plan. Phase 4 (Fix & re-test) runs when the plan is carried out; Phase 5 delivers the report.
 - Hand over to the planner in this shape: findings (with severity, status, proof), verified facts, unverified items and the questions only the user can answer (exposure, data, accepted risk, deadlines).
 - The planner also derives a reusable **security baseline** in `./docs/security/` from the verified findings, so later AI work in the project respects the rules (see its SKILL.md).
