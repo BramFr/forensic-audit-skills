@@ -44,7 +44,7 @@ For the full procedures, see `skills/forensic-audit/SKILL.md`, `skills/forensic-
 
 - One line per step; tables over prose; details only on deviation.
 - Always finish with a negative declaration: what was not tested or substantiated.
-- Cite primary sources (standards, specs, official docs), never SEO content.
+- Cite primary sources (standards, specs, official docs), never SEO content. When searching (`web-search` / `search_website`), always check first whether `./docs/index.md` exists with `## Search keywords`: if present, you MUST include 1–3 matching keywords per query (`{selected keywords} {query}`: 1–2 leading vision/scale priority terms from the start of the list for architecture/UI/scale/performance queries, or 1–2 technical domain terms for protocol/RFC/spec queries; never 0 keywords — 0 project keywords counts as `🚫 NOT SEARCHED`); if absent (standalone question), search normally.
 
 ## 6. Diagnose Before You Fix
 

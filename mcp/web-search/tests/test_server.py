@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from server import (
     SearchWebsiteInput,
+    _is_antibot_or_error_page,
     _unwrap_consent_redirect,
     search_website,
 )
@@ -21,9 +22,16 @@ def _make_sample_pdf_bytes(text: str) -> bytes:
 
 
 def test_pydantic_contract_strict_extra_forbid():
-    """Contract must enforce extra='forbid' and reject empty input."""
+    """Contract must enforce extra='forbid', support filter_query, and reject empty input."""
     valid = SearchWebsiteInput(query_or_url="python fastmcp")
     assert valid.query_or_url == "python fastmcp"
+    assert valid.filter_query is None
+
+    with_filter = SearchWebsiteInput(
+        query_or_url="https://www.coolblue.nl/home-cinema-sets",
+        filter_query="Sonos",
+    )
+    assert with_filter.filter_query == "Sonos"
 
     with pytest.raises(ValidationError):
         SearchWebsiteInput(query_or_url="test", unexpected_field="nope")
@@ -123,7 +131,9 @@ def test_fault_injection_http_error_and_network_failure(monkeypatch):
         return httpx.Response(403, text="Forbidden", request=request)
 
     monkeypatch.setattr("server._http_get", fake_get_403)
-    monkeypatch.setattr("server._fetch_html_via_browser", lambda url, timeout=25.0: None)
+    monkeypatch.setattr(
+        "server._fetch_html_via_browser", lambda url, timeout=25.0: None
+    )
     out_403 = search_website("https://example.org/blocked")
     assert "ERROR" in out_403
     assert "403" in out_403
@@ -137,6 +147,222 @@ def test_fault_injection_http_error_and_network_failure(monkeypatch):
     assert "Connection timed out" in out_timeout
 
 
+def test_opposite_antibot_something_went_wrong_never_fake_green(monkeypatch):
+    """Opposite test: eBay/Akamai 'Something went wrong on our end' page must fail closed with ERROR."""
+    ebay_error_html = (
+        "<html><head><title>Error Page | eBay</title></head>"
+        "<body><h1>SORRY</h1><p>Something went wrong on our end</p>"
+        "<p>0.6b661702.1792995278.8668249</p>"
+        "<p>Please go back and try again.</p></body></html>"
+    )
+    assert _is_antibot_or_error_page(
+        200, ebay_error_html, "https://www.ebay.nl/sch/i.html"
+    )
+    assert _is_antibot_or_error_page(
+        200,
+        "<html><head><title>Sorry voor de onderbreking...</title></head></html>",
+        "https://www.ebay.nl/splashui/challenge?ap=1",
+    )
+
+    def fake_get_soft_block(url, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=ebay_error_html,
+            request=request,
+        )
+
+    monkeypatch.setattr("server._http_get", fake_get_soft_block)
+    monkeypatch.setattr(
+        "server._fetch_html_via_browser",
+        lambda url, timeout=25.0: ebay_error_html,
+    )
+
+    out = search_website(
+        "https://www.ebay.nl/sch/i.html?_nkw=nvidia+tesla+p40&_sop=15"
+    )
+    assert out.startswith("ERROR:")
+    assert "Something went wrong on our end" not in out
+
+
+def test_layer_a_json_ld_itemlist_extraction(monkeypatch):
+    """Layer A: JSON-LD ItemList/Product catalog pages (like Coolblue) must extract all products & prices."""
+    coolblue_html = """
+    <html>
+      <head>
+        <title>Home cinema sets | Coolblue</title>
+        <script type="application/ld+json">
+        {
+          "@context": "https://schema.org",
+          "@type": "ItemList",
+          "itemListElement": [
+            {
+              "@type": "ListItem",
+              "position": 1,
+              "item": {
+                "@type": "Product",
+                "name": "Sonos Arc Ultra + Era 300 Home Cinema Set Zwart",
+                "url": "/product/956406/sonos-arc-ultra.html",
+                "offers": {
+                  "@type": "Offer",
+                  "price": 2669,
+                  "priceCurrency": "EUR",
+                  "availability": "https://schema.org/InStock"
+                }
+              }
+            },
+            {
+              "@type": "ListItem",
+              "position": 2,
+              "item": {
+                "@type": "Product",
+                "name": "Sony Bravia Theatre System 6 Zwart",
+                "url": "/product/961843/sony-bravia.html",
+                "offers": {
+                  "@type": "Offer",
+                  "price": 499,
+                  "priceCurrency": "EUR",
+                  "availability": "https://schema.org/InStock"
+                }
+              }
+            }
+          ]
+        }
+        </script>
+      </head>
+      <body><p>Met een home cinema set haal je krachtig geluid in huis.</p></body>
+    </html>
+    """
+
+    def fake_get(url, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=coolblue_html,
+            request=request,
+        )
+
+    monkeypatch.setattr("server._http_get", fake_get)
+
+    out = search_website("https://www.coolblue.nl/home-cinema-sets")
+    assert "## Extracted Items (2)" in out
+    assert "Sonos Arc Ultra + Era 300 Home Cinema Set Zwart" in out
+    assert "EUR 2669" in out
+    assert "Sony Bravia Theatre System 6 Zwart" in out
+    assert "EUR 499" in out
+
+
+def test_layer_b_hydration_next_data_extraction_and_inline_filter(monkeypatch):
+    """Layer B: __NEXT_DATA__ listings (like Marktplaats) must be extracted and filterable inline."""
+    mp_html = """
+    <html>
+      <head><title>Marktplaats Venray</title></head>
+      <body>
+        <script id="__NEXT_DATA__" type="application/json">
+        {
+          "props": {
+            "pageProps": {
+              "listings": [
+                {
+                  "itemId": "m1",
+                  "title": "Dexcom G7 45 per stuk",
+                  "vipUrl": "/v/diversen/m1-dexcom-g7",
+                  "priceInfo": {"priceCents": 4500, "priceType": "FIXED"},
+                  "location": {"cityName": "Venray"},
+                  "description": "10 voor 440 euro nieuw"
+                },
+                {
+                  "itemId": "m2",
+                  "title": "Professionele dakdekker Limburg",
+                  "vipUrl": "/v/diensten/m2-dakdekker",
+                  "priceInfo": {"priceCents": 0, "priceType": "RESERVED"},
+                  "location": {"cityName": "Venray"},
+                  "description": "Voor al uw platte en pannendaken in Venray"
+                }
+              ]
+            }
+          }
+        }
+        </script>
+        <p>Ontdek Venray op Marktplaats.</p>
+      </body>
+    </html>
+    """
+
+    def fake_get(url, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=mp_html,
+            request=request,
+        )
+
+    monkeypatch.setattr("server._http_get", fake_get)
+
+    out = search_website("https://www.marktplaats.nl/q/venray/ dakdekker")
+    assert "## Filtered Matches for `dakdekker` (1 matches)" in out
+    assert "Professionele dakdekker Limburg" in out
+    assert "## Extracted Items (2)" in out
+    assert "Dexcom G7 45 per stuk" in out
+    assert "EUR 45.00" in out
+
+
+def test_layer_c_dom_cards_and_site_fallback_on_zero_matches(monkeypatch):
+    """Layer C: DOM cards (like eBay .s-card) extract cleanly, and 0 filter matches trigger site: fallback."""
+    ebay_html = """
+    <html>
+      <head><title>Nvidia tesla p40 | eBay</title></head>
+      <body>
+        <ul>
+          <li class="s-card">
+            <div class="s-card__title">Shop on eBay</div>
+            <a href="https://ebay.com/itm/123456">Brand New $20.00</a>
+          </li>
+          <li class="s-card">
+            <div class="s-card__title">Nvidia Tesla P40 24GB GDDR5 GPU Server CardNieuw venster of tabblad</div>
+            <a href="https://www.ebay.nl/itm/404448529212">Bekijk item</a>
+            <span>Tweedehands | EUR 245,00 | Gratis verzending drosnopseG</span>
+          </li>
+        </ul>
+      </body>
+    </html>
+    """
+
+    def fake_get(url, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=ebay_html,
+            request=request,
+        )
+
+    def fake_ddg_search(query: str) -> str:
+        return f"# DuckDuckGo Search Results for: `{query}`\n## 1. [MI50 32GB](https://www.ebay.nl/itm/999)"
+
+    monkeypatch.setattr("server._http_get", fake_get)
+    monkeypatch.setattr("server._search_duckduckgo", fake_ddg_search)
+
+    out_direct = search_website(
+        "https://www.ebay.nl/sch/i.html?_nkw=nvidia+tesla+p40&_sop=15"
+    )
+    assert "Nvidia Tesla P40 24GB GDDR5 GPU Server Card" in out_direct
+    assert "EUR 245,00" in out_direct
+    assert "itm/123456" not in out_direct
+    assert "Nieuw venster of tabblad" not in out_direct
+    assert "drosnopseG" not in out_direct
+
+    out_fallback = search_website(
+        "https://www.ebay.nl/sch/i.html?_nkw=nvidia+tesla+p40&_sop=15",
+        filter_query="instinct mi50",
+    )
+    assert "0 direct matches on page; `site:ebay.nl` fallback below" in out_fallback
+    assert "site:ebay.nl instinct mi50" in out_fallback
+
+
 def test_unwrap_dpg_consent_gate_redirect():
     """Consent gate HTML with decodeURIComponent callbackUrl must be unwrapped."""
     consent_html = (
@@ -148,7 +374,10 @@ def test_unwrap_dpg_consent_gate_redirect():
     target_url = _unwrap_consent_redirect(
         "https://myprivacy.dpgmedia.nl/consent", consent_html
     )
-    assert target_url == "https://tweakers.net/privacygate-confirm?redirectUri=%2F"
+    assert (
+        target_url
+        == "https://tweakers.net/privacygate-confirm?redirectUri=%2F"
+    )
 
 
 def test_tier3_browser_fallback_on_waf_403(monkeypatch):
@@ -203,11 +432,18 @@ def test_ddg_http_202_anomaly_triggers_ddgs_fallback_and_filters_ads(monkeypatch
         ]
 
     monkeypatch.setattr("server._http_post", fake_post_202)
-    monkeypatch.setattr("server._search_ddgs_fallback", fake_ddgs_fallback, raising=False)
+    monkeypatch.setattr(
+        "server._search_ddgs_fallback", fake_ddgs_fallback, raising=False
+    )
 
-    out = search_website("azurepolicy k8sazurev2noprivilege deployment safeguards")
+    out = search_website(
+        "azurepolicy k8sazurev2noprivilege deployment safeguards"
+    )
     assert "Deployment Safeguards on AKS" in out
-    assert "https://learn.microsoft.com/en-us/azure/aks/deployment-safeguards" in out
+    assert (
+        "https://learn.microsoft.com/en-us/azure/aks/deployment-safeguards"
+        in out
+    )
     assert "bing.com/aclick" not in out
     assert "duckduckgo.com/y.js" not in out
 
@@ -226,7 +462,9 @@ def test_ddg_anomaly_and_ddgs_failure_returns_fail_closed_error(monkeypatch):
         raise RuntimeError("All ddgs backends rate-limited or unreachable")
 
     monkeypatch.setattr("server._http_post", fake_post_202)
-    monkeypatch.setattr("server._search_ddgs_fallback", fake_ddgs_error, raising=False)
+    monkeypatch.setattr(
+        "server._search_ddgs_fallback", fake_ddgs_error, raising=False
+    )
 
     out = search_website("kaniko kubernetes non-root securityContext")
     assert out.startswith("ERROR:")
@@ -240,7 +478,12 @@ def test_ddg_empty_200_and_ddgs_no_results_returns_no_results_message(monkeypatc
         return httpx.Response(200, text="<html><body></body></html>", request=request)
 
     monkeypatch.setattr("server._http_post", fake_post_200_empty)
-    monkeypatch.setattr("server._search_ddgs_fallback", lambda q, max_results=10: [])
+    monkeypatch.setattr(
+        "server._search_ddgs_fallback", lambda q, max_results=10: []
+    )
 
     out = search_website("nonexistent_xyz_query_987654321")
-    assert out == "No DuckDuckGo results found for query: 'nonexistent_xyz_query_987654321'."
+    assert (
+        out
+        == "No DuckDuckGo results found for query: 'nonexistent_xyz_query_987654321'."
+    )

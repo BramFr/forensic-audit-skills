@@ -1,8 +1,9 @@
 import contextlib
+import json
 import re
 import sys
 from collections.abc import Mapping
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 with contextlib.redirect_stdout(sys.stderr):
@@ -15,7 +16,7 @@ with contextlib.redirect_stdout(sys.stderr):
     from ddgs.exceptions import DDGSException
     from fastmcp import FastMCP
     from lxml import html as lxml_html
-    from pydantic import BaseModel, ConfigDict, field_validator
+    from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 mcp = FastMCP("web-search")
 
@@ -31,6 +32,16 @@ DEFAULT_COOKIES = {
     "SOCS": "CAISHAgBEhJnd3NfMjAyMzA4MTUtMF9SQzIaAm5sIAEaBgiAo_CmBg",
 }
 
+IMPERSONATE_PROFILES: tuple[str, ...] = (
+    "chrome",
+    "safari260",
+    "safari184",
+    "firefox144",
+    "safari184_ios",
+)
+
+_SESSIONS: dict[str, Any] = {}
+
 DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 
 _JS_CALLBACK_RE = re.compile(
@@ -40,12 +51,71 @@ _META_REFRESH_RE = re.compile(
     r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+content=["\']?\d+\s*;\s*url=([^"\'>\s]+)',
     re.IGNORECASE,
 )
+_ANTIBOT_PATTERNS = re.compile(
+    r"(something went wrong on our end|pardon our interruption|"
+    r"error page\s*\|\s*ebay|sorry voor de onderbreking|"
+    r"attention required!\s*\|\s*cloudflare|just a moment\.\.\.|"
+    r"verify you are human|access denied|cc=botnet|anomaly-modal|"
+    r"splashui/captcha|enable javascript and cookies to continue)",
+    re.IGNORECASE,
+)
+_UI_NOISE_RE = re.compile(
+    r"(Nieuw venster of tabblad|Opent in nieuw venster of tabblad|"
+    r"Bewaren in Mijn Favorieten|drosnopseG)",
+    re.IGNORECASE,
+)
+_STOPWORDS = frozenset(
+    {
+        "de",
+        "het",
+        "een",
+        "en",
+        "van",
+        "in",
+        "op",
+        "voor",
+        "met",
+        "te",
+        "om",
+        "naar",
+        "bij",
+        "of",
+        "the",
+        "and",
+        "for",
+        "with",
+        "in",
+        "on",
+        "to",
+        "of",
+    }
+)
 
 
 class SearchWebsiteInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    query_or_url: str
+    query_or_url: str = Field(
+        description=(
+            "Search query, http(s) URL, or 'https://... <filter_keywords>' to scrape and filter a URL. "
+            "MANDATORY FOR SEARCH QUERIES: before searching, check whether ./docs/index.md exists with "
+            "a '## Search keywords' section. If present, you MUST include 1 to 3 fitting terms from "
+            "'## Search keywords' in query_or_url (for architecture, UI, canvas, scale or performance "
+            "queries, pick 1-2 leading vision/scale priority terms from the start of the list; for "
+            "protocol, RFC or standard specs, pick 1-2 matching technical domain terms from the list; "
+            "strip search-operator punctuation like '+' from keywords). Never send 0 keywords when "
+            "'## Search keywords' is present."
+        )
+    )
+    filter_query: str | None = Field(
+        default=None,
+        description=(
+            "Optional keyword filter when query_or_url is an http(s) URL (or pass 'https://... <keywords>' "
+            "inline in query_or_url). Filters extracted products, listings and text sections on the page "
+            "by matching terms from the user's question, and falls back to a 'site:<domain> <filter_query>' "
+            "search if 0 items match on the page."
+        ),
+    )
 
     @field_validator("query_or_url")
     @classmethod
@@ -53,6 +123,22 @@ class SearchWebsiteInput(BaseModel):
         if not value:
             raise ValueError("query_or_url must not be empty")
         return value
+
+
+def _is_antibot_or_error_page(
+    status_code: int, html_text: str, final_url: str = ""
+) -> bool:
+    """Detect HTTP error status codes and HTTP 200 WAF/anti-bot interstitials."""
+    if status_code >= 400:
+        return True
+    if not html_text or not html_text.strip():
+        return True
+    lowered_url = final_url.lower()
+    if "splashui/challenge" in lowered_url or "splashui/captcha" in lowered_url:
+        return True
+    if len(html_text) < 40000 and _ANTIBOT_PATTERNS.search(html_text):
+        return True
+    return False
 
 
 def _unwrap_consent_redirect(current_url: str, html_text: str) -> str | None:
@@ -82,28 +168,71 @@ def _unwrap_consent_redirect(current_url: str, html_text: str) -> str | None:
     return None
 
 
+def _get_or_create_session(profile: str) -> Any:
+    session = _SESSIONS.get(profile)
+    if session is None:
+        session = curl_requests.Session(impersonate=profile)
+        session.cookies.update(DEFAULT_COOKIES)
+        _SESSIONS[profile] = session
+    return session
+
+
 def _http_get(url: str, timeout: float = 30.0) -> Any:
-    """Fetch URL using Chrome TLS/HTTP2 impersonation and automatic consent-gate unwrapping."""
-    session = curl_requests.Session(impersonate="chrome")
-    resp = session.get(
-        url,
-        headers=DEFAULT_HEADERS,
-        cookies=DEFAULT_COOKIES,
-        allow_redirects=True,
-        timeout=timeout,
+    """Fetch URL with persistent cookie jar, consent-gate unwrapping and TLS profile rotation."""
+    parsed = urlparse(url)
+    origin_referer = (
+        f"{parsed.scheme}://{parsed.netloc}/"
+        if parsed.scheme and parsed.netloc
+        else url
     )
-    content_type = resp.headers.get("content-type", "")
-    if "html" in content_type.lower() and resp.status_code < 400:
-        final_url = str(getattr(resp, "url", url))
-        callback_url = _unwrap_consent_redirect(final_url, resp.text)
-        if callback_url and callback_url != final_url:
-            resp = session.get(
-                callback_url,
-                headers=DEFAULT_HEADERS,
-                allow_redirects=True,
-                timeout=timeout,
+    last_resp: Any = None
+    last_exc: Exception | None = None
+
+    for profile in IMPERSONATE_PROFILES:
+        session = _get_or_create_session(profile)
+        for attempt in range(3):
+            req_headers = (
+                {**DEFAULT_HEADERS, "Referer": origin_referer}
+                if attempt > 0
+                else DEFAULT_HEADERS
             )
-    return resp
+            try:
+                resp = session.get(
+                    url,
+                    headers=req_headers,
+                    allow_redirects=True,
+                    timeout=timeout,
+                )
+            except Exception as exc:
+                last_exc = exc
+                break
+
+            content_type = resp.headers.get("content-type", "")
+            if "html" in content_type.lower() and resp.status_code < 400:
+                final_url = str(getattr(resp, "url", url))
+                callback_url = _unwrap_consent_redirect(final_url, resp.text)
+                if callback_url and callback_url != final_url:
+                    resp = session.get(
+                        callback_url,
+                        headers=DEFAULT_HEADERS,
+                        allow_redirects=True,
+                        timeout=timeout,
+                    )
+
+            last_resp = resp
+            final_url = str(getattr(resp, "url", url))
+            if "html" not in content_type.lower() and resp.status_code < 400:
+                return resp
+            if not _is_antibot_or_error_page(
+                resp.status_code, resp.text, final_url
+            ):
+                return resp
+
+    if last_resp is not None:
+        return last_resp
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"Failed to fetch URL '{url}'")
 
 
 def _http_post(
@@ -132,16 +261,18 @@ def _fetch_html_via_browser(url: str, timeout: float = 25.0) -> str | None:
                 args=["--disable-blink-features=AutomationControlled"],
             )
             try:
+                probe_page = browser.new_page()
+                native_ua = probe_page.evaluate("navigator.userAgent").replace(
+                    "HeadlessChrome", "Chrome"
+                )
+                probe_page.close()
+
                 context = browser.new_context(
                     locale="nl-NL",
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/131.0.0.0 Safari/537.36"
-                    ),
+                    user_agent=native_ua,
                 )
                 page = context.new_page()
-                page.goto(
+                resp = page.goto(
                     url,
                     wait_until="domcontentloaded",
                     timeout=int(timeout * 1000),
@@ -161,7 +292,13 @@ def _fetch_html_via_browser(url: str, timeout: float = 25.0) -> str | None:
                             break
                     except Exception:
                         pass
-                return page.content()
+                html_content = page.content()
+                status_code = resp.status if resp is not None else 200
+                if _is_antibot_or_error_page(
+                    status_code, html_content, page.url
+                ):
+                    return None
+                return html_content
             finally:
                 browser.close()
     except Exception:
@@ -171,6 +308,23 @@ def _fetch_html_via_browser(url: str, timeout: float = 25.0) -> str | None:
 def _is_url(value: str) -> bool:
     lowered = value.lower()
     return lowered.startswith("http://") or lowered.startswith("https://")
+
+
+def _split_url_and_filter(
+    query_or_url: str, filter_query: str | None = None
+) -> tuple[str, str | None]:
+    """Split inline 'https://... <filter terms>' and combine with explicit filter_query."""
+    stripped = query_or_url.strip()
+    explicit_filter = (filter_query or "").strip()
+    if _is_url(stripped):
+        parts = stripped.split(None, 1)
+        url_part = parts[0]
+        inline_filter = parts[1].strip() if len(parts) > 1 else ""
+        combined = " ".join(
+            f for f in (inline_filter, explicit_filter) if f
+        ).strip()
+        return url_part, (combined or None)
+    return stripped, (explicit_filter or None)
 
 
 def _is_pdf(url: str, content_type: str, content: bytes) -> bool:
@@ -296,6 +450,271 @@ def _search_ddgs_fallback(
     return cleaned
 
 
+def _extract_json_ld_items(
+    tree: Any, base_url: str, max_items: int = 60
+) -> list[str]:
+    """Layer A: Extract Schema.org Product, Offer and ItemList entries from JSON-LD scripts."""
+    items_md: list[str] = []
+    seen_titles: set[str] = set()
+
+    def _format_product(obj: dict[str, Any]) -> str | None:
+        name = " ".join(str(obj.get("name") or "").split())
+        if not name:
+            return None
+        raw_url = obj.get("url") or ""
+        offers = obj.get("offers")
+        if isinstance(offers, list) and offers:
+            offers = offers[0]
+        if not raw_url and isinstance(offers, dict):
+            raw_url = offers.get("url") or ""
+        item_url = urljoin(base_url, str(raw_url)) if raw_url else ""
+
+        price_str = ""
+        if isinstance(offers, dict):
+            price = offers.get("price")
+            if price is None:
+                price = offers.get("lowPrice")
+            currency = offers.get("priceCurrency") or "EUR"
+            avail = str(offers.get("availability") or "").rsplit("/", 1)[-1]
+            if price is not None:
+                # Skip generic category-level SEO placeholder (no URL and price == 1)
+                if not item_url and str(price) in ("1", "1.0", "1.00") and not obj.get("description"):
+                    return None
+                price_str = f" — **{currency} {price}**"
+                if avail:
+                    price_str += f" ({avail})"
+
+        rating_str = ""
+        agg = obj.get("aggregateRating")
+        if isinstance(agg, dict):
+            rv = agg.get("ratingValue")
+            rc = agg.get("reviewCount") or agg.get("ratingCount")
+            if rv:
+                rating_str = f" | Rating: {rv}" + (
+                    f" ({rc} reviews)" if rc else ""
+                )
+
+        desc = " ".join(str(obj.get("description") or "").split())
+        if len(desc) > 180:
+            desc = desc[:177] + "..."
+
+        norm_key = name.lower()
+        if norm_key in seen_titles:
+            return None
+        seen_titles.add(norm_key)
+
+        head = f"[{name}]({item_url})" if item_url else f"**{name}**"
+        line = f"- {head}{price_str}{rating_str}"
+        if desc and desc.lower() != name.lower():
+            line += f" — {desc}"
+        return line
+
+    def _walk_ld(node: Any) -> None:
+        if len(items_md) >= max_items:
+            return
+        if isinstance(node, list):
+            for el in node:
+                _walk_ld(el)
+        elif isinstance(node, dict):
+            t_raw = node.get("@type")
+            types = (
+                [str(x) for x in t_raw]
+                if isinstance(t_raw, list)
+                else [str(t_raw or "")]
+            )
+            if any(
+                t in ("Product", "Offer", "IndividualProduct") for t in types
+            ):
+                formatted = _format_product(node)
+                if formatted:
+                    items_md.append(formatted)
+            elif "ListItem" in types and isinstance(node.get("item"), dict):
+                _walk_ld(node["item"])
+            else:
+                for k in (
+                    "itemListElement",
+                    "@graph",
+                    "mainEntity",
+                    "hasVariant",
+                ):
+                    if k in node:
+                        _walk_ld(node[k])
+
+    for raw in tree.xpath("//script[@type='application/ld+json']/text()"):
+        try:
+            data = json.loads(raw.strip())
+            _walk_ld(data)
+        except Exception:
+            continue
+    return items_md
+
+
+def _extract_hydration_items(
+    tree: Any, base_url: str, max_items: int = 60
+) -> list[str]:
+    """Layer B: Extract listing/product items from Next.js __NEXT_DATA__ or SSR state JSON."""
+    items_md: list[str] = []
+    seen_titles: set[str] = set()
+
+    def _format_candidate(d: dict[str, Any]) -> str | None:
+        title = d.get("title") or d.get("name") or d.get("headline")
+        if not isinstance(title, str) or len(title.strip()) < 3:
+            return None
+        title = " ".join(title.split())
+
+        price_val = ""
+        pi = d.get("priceInfo") or d.get("price") or d.get("offers")
+        if isinstance(pi, dict):
+            cents = pi.get("priceCents")
+            ptype = pi.get("priceType")
+            if cents is not None:
+                price_val = f"EUR {cents / 100:.2f}"
+            elif pi.get("price") is not None:
+                price_val = f"{pi.get('currency', 'EUR')} {pi.get('price')}"
+            elif ptype:
+                price_val = str(ptype)
+        elif isinstance(pi, (int, float, str)) and str(pi).strip():
+            price_val = str(pi).strip()
+
+        raw_url = (
+            d.get("vipUrl")
+            or d.get("url")
+            or d.get("href")
+            or d.get("seoUrl")
+            or ""
+        )
+        item_url = (
+            urljoin(base_url, raw_url)
+            if isinstance(raw_url, str) and raw_url
+            else ""
+        )
+
+        desc_raw = (
+            d.get("description")
+            or d.get("categorySpecificDescription")
+            or d.get("summary")
+            or ""
+        )
+        desc = " ".join(str(desc_raw).split()) if isinstance(desc_raw, str) else ""
+        if len(desc) > 180:
+            desc = desc[:177] + "..."
+
+        loc = ""
+        if isinstance(d.get("location"), dict):
+            city = (
+                d["location"].get("cityName")
+                or d["location"].get("countryName")
+            )
+            if city:
+                loc = f" | {city}"
+
+        if not (price_val or item_url):
+            return None
+        if not price_val and not d.get("itemId") and not d.get("vipUrl"):
+            return None
+
+        norm_key = f"{title.lower()}|{item_url}"
+        if norm_key in seen_titles:
+            return None
+        seen_titles.add(norm_key)
+
+        head = f"[{title}]({item_url})" if item_url else f"**{title}**"
+        price_part = f" — **{price_val}**" if price_val else ""
+        desc_part = f" — {desc}" if desc else ""
+        return f"- {head}{price_part}{loc}{desc_part}"
+
+    def _walk_json(node: Any) -> None:
+        if len(items_md) >= max_items:
+            return
+        if isinstance(node, list):
+            for el in node:
+                _walk_json(el)
+        elif isinstance(node, dict):
+            line = _format_candidate(node)
+            if line:
+                items_md.append(line)
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    _walk_json(v)
+
+    for raw in tree.xpath(
+        "//script[@id='__NEXT_DATA__' or contains(@id, 'STATE')]/text()"
+    ):
+        try:
+            data = json.loads(raw.strip())
+            _walk_json(data)
+        except Exception:
+            continue
+    return items_md
+
+
+def _extract_dom_cards(
+    tree: Any, base_url: str, max_items: int = 60
+) -> list[str]:
+    """Layer C: Extract repeating product/result cards from generic semantic DOM structures."""
+    items_md: list[str] = []
+    seen_titles: set[str] = set()
+    xpath_cards = (
+        "//li[contains(@class, 's-card') or contains(@class, 's-item') "
+        "or contains(@class, 'Listing') or contains(@class, 'product') "
+        "or contains(@class, 'result')]"
+        " | //div[contains(@class, 's-card') or contains(@class, 'product-card') "
+        "or contains(@class, 'search-result')]"
+        " | //article"
+    )
+    for card in tree.xpath(xpath_cards):
+        if len(items_md) >= max_items:
+            break
+        title_nodes = card.xpath(
+            ".//*[contains(@class, 's-card__title') or contains(@class, 's-item__title') "
+            "or contains(@class, 'title') or self::h2 or self::h3 or self::h4]"
+        )
+        title = ""
+        for tn in title_nodes:
+            t_cand = _UI_NOISE_RE.sub(
+                "", " ".join(tn.text_content().split())
+            ).strip()
+            if len(t_cand) >= 5 and t_cand.lower() not in (
+                "shop on ebay",
+                "vergelijken",
+                "brand new",
+                "nieuw (anders) | zakelijk",
+                "tweedehands | zakelijk",
+            ):
+                title = t_cand
+                break
+        if not title:
+            continue
+
+        href = ""
+        for a in card.xpath(".//a[@href]"):
+            h = (a.get("href") or "").strip()
+            if h and not h.startswith(("#", "javascript:")):
+                href = urljoin(base_url, h)
+                break
+        if "itm/123456" in href:
+            continue
+
+        full_text = _UI_NOISE_RE.sub(
+            " ", " ".join(card.text_content().split())
+        ).strip()
+        details = full_text.replace(title, "", 1).strip(" -|·,")
+        if not details and not href:
+            continue
+        if len(details) > 220:
+            details = details[:217] + "..."
+
+        norm_title = title.lower()
+        if norm_title in seen_titles:
+            continue
+        seen_titles.add(norm_title)
+
+        head = f"[{title}]({href})" if href else f"**{title}**"
+        line = f"- {head}" + (f" — {details}" if details else "")
+        items_md.append(line)
+    return items_md
+
+
 def _extract_portal_headlines(html_text: str, base_url: str) -> str:
     """Extract structured headlines and links from portal/overview pages."""
     try:
@@ -308,12 +727,17 @@ def _extract_portal_headlines(html_text: str, base_url: str) -> str:
     xpath_query = (
         '//a[contains(@class, "headline") '
         "or ancestor::h1 or ancestor::h2 or ancestor::h3 "
-        'or ancestor::article//a]'
+        "or ancestor::article//a]"
     )
     for node in tree.xpath(xpath_query):
         text = " ".join(node.text_content().split())
         href = (node.get("href") or "").strip()
-        if len(text) < 12 or not href or href.startswith("#") or href.startswith("javascript:"):
+        if (
+            len(text) < 12
+            or not href
+            or href.startswith("#")
+            or href.startswith("javascript:")
+        ):
             continue
         full_url = urljoin(base_url, href)
         key = f"{text}|{full_url}"
@@ -335,31 +759,134 @@ def _html_to_markdown(html_text: str, url: str) -> str | None:
         favor_recall=True,
     )
     body = (extracted or "").strip()
-    if len(html_text) > 30000 and len(body) < 4000:
+
+    structured_items: list[str] = []
+    try:
+        tree = lxml_html.fromstring(html_text)
+        ld_items = _extract_json_ld_items(tree, url)
+        hyd_items = _extract_hydration_items(tree, url)
+        dom_items = _extract_dom_cards(tree, url)
+        if len(ld_items) >= 2 and len(ld_items) >= len(hyd_items):
+            structured_items = ld_items
+        elif hyd_items:
+            structured_items = hyd_items
+        elif ld_items:
+            structured_items = ld_items
+        else:
+            structured_items = dom_items
+    except Exception:
+        structured_items = []
+
+    sections: list[str] = []
+    if structured_items:
+        sections.append(
+            f"## Extracted Items ({len(structured_items)})\n\n"
+            + "\n".join(structured_items)
+        )
+
+    if len(html_text) > 30000 and len(body) < 4000 and not structured_items:
         headlines = _extract_portal_headlines(html_text, url)
         if headlines:
-            body = f"{headlines}\n\n{body}".strip()
-    return body or None
+            sections.append(headlines)
+
+    if body:
+        cleaned_body_lines = [
+            _UI_NOISE_RE.sub("", line).rstrip()
+            for line in body.splitlines()
+            if "itm/123456" not in line
+        ]
+        cleaned_body = "\n".join(cleaned_body_lines).strip()
+        if cleaned_body:
+            sections.append(cleaned_body)
+
+    combined = "\n\n".join(s for s in sections if s).strip()
+    return combined or None
 
 
-def _fetch_url_as_markdown(url: str) -> str:
+def _apply_content_filter(
+    markdown_body: str, url: str, filter_query: str
+) -> str:
+    """Filter extracted Markdown items/paragraphs by filter_query; fallback to site: search if 0 match."""
+    raw_terms = [
+        t.lower()
+        for t in re.split(r"\W+", filter_query)
+        if len(t) >= 2 and t.lower() not in _STOPWORDS
+    ]
+    if not raw_terms:
+        raw_terms = [filter_query.strip().lower()]
+
+    scored_matches: list[tuple[int, int, str]] = []
+    for idx, line in enumerate(markdown_body.splitlines()):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        lowered = stripped.lower()
+        hits = sum(1 for term in raw_terms if term in lowered)
+        if hits > 0:
+            scored_matches.append((hits, -idx, stripped))
+
+    if scored_matches:
+        scored_matches.sort(reverse=True)
+        matched_lines = [item[2] for item in scored_matches[:40]]
+        filter_block = (
+            f"## Filtered Matches for `{filter_query}` ({len(matched_lines)} matches)\n\n"
+            + "\n".join(matched_lines)
+        )
+        return f"{filter_block}\n\n---\n\n{markdown_body}"
+
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    site_fallback = (
+        _search_duckduckgo(f"site:{domain} {filter_query}")
+        if domain
+        else ""
+    )
+    fallback_block = (
+        f"## Filtered Matches for `{filter_query}` (0 direct matches on page; `site:{domain}` fallback below)\n\n"
+        f"{site_fallback}"
+    )
+    return f"{fallback_block}\n\n---\n\n{markdown_body}"
+
+
+def _fetch_url_as_markdown(
+    url: str, filter_query: str | None = None
+) -> str:
     try:
         response = _http_get(url)
     except Exception as exc:
         return f"ERROR: Failed to fetch URL '{url}': {type(exc).__name__}: {exc}"
 
     with contextlib.redirect_stdout(sys.stderr):
-        if response.status_code >= 400:
+        final_url = str(getattr(response, "url", url))
+        content_type = response.headers.get("content-type", "")
+        is_html_like = (
+            "html" in content_type.lower() or not content_type
+        ) and not _is_pdf(url, content_type, response.content or b"")
+
+        if response.status_code >= 400 or (
+            is_html_like
+            and _is_antibot_or_error_page(
+                response.status_code, response.text, final_url
+            )
+        ):
             rendered_html = _fetch_html_via_browser(url)
-            if rendered_html:
+            if rendered_html and not _is_antibot_or_error_page(
+                200, rendered_html, url
+            ):
                 md_from_browser = _html_to_markdown(rendered_html, url)
                 if md_from_browser:
+                    if filter_query:
+                        md_from_browser = _apply_content_filter(
+                            md_from_browser, url, filter_query
+                        )
                     return f"# Source: {url}\n\n{md_from_browser}"
             return (
-                f"ERROR: HTTP {response.status_code} when fetching URL '{url}'."
+                f"ERROR: HTTP {response.status_code} (or anti-bot challenge page) "
+                f"when fetching URL '{url}'."
             )
 
-        content_type = response.headers.get("content-type", "")
         raw_bytes = response.content
 
         if not raw_bytes:
@@ -377,19 +904,27 @@ def _fetch_url_as_markdown(url: str) -> str:
 
             if not md_text or not md_text.strip():
                 return f"ERROR: PDF at '{url}' contained no extractable text."
-            return f"# Source: {url}\n\n{md_text.strip()}"
+            body_out = md_text.strip()
+            if filter_query:
+                body_out = _apply_content_filter(body_out, url, filter_query)
+            return f"# Source: {url}\n\n{body_out}"
 
         lowered_ct = content_type.lower()
         if any(
             token in lowered_ct
             for token in ("text/plain", "text/markdown", "application/json")
         ):
-            return f"# Source: {url}\n\n{response.text}"
+            body_out = response.text
+            if filter_query:
+                body_out = _apply_content_filter(body_out, url, filter_query)
+            return f"# Source: {url}\n\n{body_out}"
 
         md_body = _html_to_markdown(response.text, url)
         if not md_body:
             rendered_html = _fetch_html_via_browser(url)
-            if rendered_html:
+            if rendered_html and not _is_antibot_or_error_page(
+                200, rendered_html, url
+            ):
                 md_body = _html_to_markdown(rendered_html, url)
 
         if not md_body:
@@ -397,6 +932,8 @@ def _fetch_url_as_markdown(url: str) -> str:
                 f"ERROR: Could not extract readable content from '{url}' "
                 "(page may require JavaScript or have no main article text)."
             )
+        if filter_query:
+            md_body = _apply_content_filter(md_body, url, filter_query)
         return f"# Source: {url}\n\n{md_body}"
 
 
@@ -407,9 +944,13 @@ def _search_duckduckgo(query: str) -> str:
 
     try:
         resp = _http_post(DDG_HTML_URL, data={"q": query})
-        if resp.status_code >= 400 or _is_ddg_anomaly(resp.status_code, resp.text):
+        if resp.status_code >= 400 or _is_ddg_anomaly(
+            resp.status_code, resp.text
+        ):
             tier1_blocked_or_failed = True
-            tier1_error_detail = f"HTTP {resp.status_code} (anti-bot challenge or error)"
+            tier1_error_detail = (
+                f"HTTP {resp.status_code} (anti-bot challenge or error)"
+            )
         else:
             results = _parse_ddg_html(resp.text, max_results=10)
     except Exception as exc:
@@ -448,12 +989,44 @@ def _search_duckduckgo(query: str) -> str:
 
 
 @mcp.tool()
-def search_website(query_or_url: str) -> str:
-    """Search DuckDuckGo for a query, or fetch a webpage/PDF as Markdown for an http(s) URL."""
-    validated = SearchWebsiteInput(query_or_url=query_or_url)
-    target = validated.query_or_url
+def search_website(
+    query_or_url: Annotated[
+        str,
+        Field(
+            description=(
+                "Search query, http(s) URL, or 'https://... <filter_keywords>' to scrape and filter a URL. "
+                "MANDATORY FOR SEARCH QUERIES: before searching, check whether ./docs/index.md exists with "
+                "a '## Search keywords' section. If present, you MUST include 1 to 3 fitting terms from "
+                "'## Search keywords' in query_or_url (for architecture, UI, canvas, scale or performance "
+                "queries, pick 1-2 leading vision/scale priority terms from the start of the list; for "
+                "protocol, RFC or standard specs, pick 1-2 matching technical domain terms from the list; "
+                "strip search-operator punctuation like '+' from keywords). Never send 0 keywords when "
+                "'## Search keywords' is present."
+            )
+        ),
+    ],
+    filter_query: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Optional keyword filter when query_or_url is an http(s) URL (or pass 'https://... <keywords>' "
+                "inline in query_or_url). Filters extracted products, listings and text sections on the page "
+                "by matching terms from the user's question, and falls back to a 'site:<domain> <filter_query>' "
+                "search if 0 items match on the page."
+            ),
+        ),
+    ] = None,
+) -> str:
+    """Search DuckDuckGo for a query, or fetch a webpage/PDF/catalog as Markdown for an http(s) URL (with optional filter_query or inline 'https://... <keywords>'). MANDATORY BEFORE SEARCHING: check whether ./docs/index.md exists with '## Search keywords'. If present, always include 1 to 3 fitting keywords from '## Search keywords' in every search query (1-2 leading vision/scale priority terms for architecture/UI/scale/performance queries, or 1-2 technical domain terms for protocol/RFC/standard queries; never 0 keywords)."""
+    validated = SearchWebsiteInput(
+        query_or_url=query_or_url, filter_query=filter_query
+    )
+    target, active_filter = _split_url_and_filter(
+        validated.query_or_url, validated.filter_query
+    )
     if _is_url(target):
-        return _fetch_url_as_markdown(target)
+        return _fetch_url_as_markdown(target, filter_query=active_filter)
     return _search_duckduckgo(target)
 
 

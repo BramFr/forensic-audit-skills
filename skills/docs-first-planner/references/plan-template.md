@@ -1,6 +1,6 @@
 # Plan template
 
-Use this structure for every item saved to `./docs/<category>/NN-slug.md`. Write the content in the user's language. Keep the frontmatter exactly as shown, because `scripts/docs_tool.py` builds the index from it.
+Use this structure for every item saved to `./docs/<category>/NN-slug.md`. Write the content in the user's language. Keep the frontmatter exactly as shown, because `scripts/docs_tool.py` builds the index from it. `summary` and `tags` are what is read first (see progressive reading in `SKILL.md`), so make them specific.
 
 ```markdown
 ---
@@ -34,8 +34,11 @@ The problem or goal in 2-4 sentences, and how it supports the product vision
 - In:
 - Out (explicitly not doing):
 
+## Scaffold (only when the plan creates or reshapes modules)
+Technical choices, tree, dependency direction, boundaries and key interfaces, as in `scaffold-template.md`. Omit this section for changes inside one existing module.
+
 ## Approach
-Numbered steps, each small enough to be done and checked on its own.
+Numbered steps, each small enough to be done and checked on its own. When a scaffold exists, make it one step per module, so each module can be generated in one pass from its contract.
 1. ...
 
 ## Acceptance criteria

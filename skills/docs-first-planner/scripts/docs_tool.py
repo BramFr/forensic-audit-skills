@@ -6,6 +6,7 @@ Usage (run from the project root, or pass --docs PATH):
   docs_tool.py index             rebuild the item table in docs/index.md from frontmatter
   docs_tool.py check             report problems (missing frontmatter, duplicate IDs, bad links, stale index)
   docs_tool.py index --strict    like index, but refuse to write when check finds problems
+  docs_tool.py modules           rebuild the module table in docs/index.md from every MODULE.md in the project
 """
 import argparse
 import re
@@ -13,6 +14,8 @@ import sys
 from pathlib import Path
 
 START, END = "<!-- INDEX:START -->", "<!-- INDEX:END -->"
+MSTART, MEND = "<!-- MODULES:START -->", "<!-- MODULES:END -->"
+SKIP_DIRS = {".git", "node_modules", "venv", ".venv", "__pycache__", "target", "dist", "build", ".next", "vendor"}
 STATUSES = {"planned", "in-progress", "done", "dropped", "superseded"}
 FILE_RE = re.compile(r"^(\d{2,})-.+\.md$")
 SKELETON = f"""# Docs index
@@ -102,6 +105,47 @@ def cmd_index(docs, strict=False):
         print("WARNING:", w)
 
 
+def find_modules(docs):
+    """Yield (path relative to project root, frontmatter-or-None) for every MODULE.md outside ./docs."""
+    root = docs.resolve().parent
+    for f in sorted(root.rglob("MODULE.md")):
+        rel = f.relative_to(root)
+        if docs.resolve() in f.resolve().parents or SKIP_DIRS & set(rel.parts):
+            continue
+        yield rel, parse_frontmatter(f)
+
+
+def build_module_table(docs):
+    rows = ["| Module | Summary | Keywords | Depends on |", "| --- | --- | --- | --- |"]
+    warnings = []
+    for rel, fm in find_modules(docs):
+        if not fm or not fm.get("summary"):
+            warnings.append(f"{rel.as_posix()}: MODULE.md needs frontmatter with a one-line summary")
+            continue
+        folder = rel.parent.as_posix() or "."
+        rows.append(
+            f"| [{cell(folder)}](../{rel.as_posix()}) | {cell(fm.get('summary'))} "
+            f"| {cell(fm.get('keywords'))} | {cell(fm.get('depends_on'))} |"
+        )
+    return "\n".join(rows), warnings
+
+
+def cmd_modules(docs):
+    docs.mkdir(parents=True, exist_ok=True)
+    index = docs / "index.md"
+    if not index.exists():
+        index.write_text(SKELETON, encoding="utf-8")
+    text = index.read_text(encoding="utf-8")
+    if MSTART not in text or MEND not in text:
+        text = text.rstrip() + f"\n\n## Modules\n{MSTART}\n{MEND}\n"
+    table, warnings = build_module_table(docs)
+    new = re.sub(re.escape(MSTART) + r".*?" + re.escape(MEND), lambda _: f"{MSTART}\n{table}\n{MEND}", text, flags=re.S)
+    index.write_text(new, encoding="utf-8")
+    print(f"modules updated: {len(table.splitlines()) - 2} module(s)")
+    for w in warnings:
+        print("WARNING:", w)
+
+
 def collect_problems(docs):
     problems = []
     index = docs / "index.md"
@@ -139,6 +183,13 @@ def collect_problems(docs):
         m = re.search(re.escape(START) + r"\n?(.*?)\n?" + re.escape(END), index.read_text(encoding="utf-8"), re.S)
         if not m or m.group(1).strip() != table.strip():
             problems.append("docs/index.md is out of sync with the item files (run: docs_tool.py index)")
+        text = index.read_text(encoding="utf-8")
+        if MSTART in text and MEND in text:  # module index is optional: only checked once it exists
+            mtable, mwarnings = build_module_table(docs)
+            problems.extend(mwarnings)
+            mm = re.search(re.escape(MSTART) + r"\n?(.*?)\n?" + re.escape(MEND), text, re.S)
+            if not mm or mm.group(1).strip() != mtable.strip():
+                problems.append("docs/index.md module table is out of sync with the MODULE.md files (run: docs_tool.py modules)")
     return problems
 
 
@@ -158,14 +209,15 @@ def main():
     n.add_argument("category")
     sub.add_parser("index").add_argument("--strict", action="store_true", help="refuse to write when check finds problems")
     sub.add_parser("check")
+    sub.add_parser("modules")
     args = ap.parse_args()
     docs = Path(args.docs)
-    if args.cmd != "index" and not docs.is_dir():
+    if args.cmd not in ("index", "modules") and not docs.is_dir():
         print(f"{docs} does not exist" + (" (next number would be 01)" if args.cmd == "next" else ""))
         if args.cmd == "next":
             print("01")
         sys.exit(0 if args.cmd == "next" else 1)
-    {"next": lambda: cmd_next(docs, args.category), "index": lambda: cmd_index(docs, args.strict), "check": lambda: cmd_check(docs)}[args.cmd]()
+    {"next": lambda: cmd_next(docs, args.category), "index": lambda: cmd_index(docs, args.strict), "check": lambda: cmd_check(docs), "modules": lambda: cmd_modules(docs)}[args.cmd]()
 
 
 if __name__ == "__main__":

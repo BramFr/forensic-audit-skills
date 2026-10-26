@@ -55,3 +55,9 @@ When the grill changes scope, approach or dependencies, audit only the new or ch
 - A pasted error, log or symptom is evidence that it happened; the explanation of it is a hypothesis. Discover the domain and governing standard/authority via live search (`search_website`), quote the failure, find the decisive signal at its origin (not the wrapper), and make the root cause a P1-P5 point with its own primary-source and runtime check.
 - Check whether the failure is a deliberate guard. If it is, the fix satisfies the guard and the plan must not weaken it.
 - Hand the result over under Starting point (Verified, Corrected, Unverified) and as the Observed error and Root cause sections of a bug plan.
+
+## Changes that add or reshape modules
+
+- Treat "this module/function/type does not exist yet" as an Impact claim: prove it with a project-wide search for the symbol, the concept and likely synonyms, and report the hits. Duplicated or double-implemented features are the typical vibe-coding failure, so a missing search is a process failure here.
+- Treat claimed boundaries as claims too: "nothing else imports this", "A does not depend on B". Check them with a search of the real imports, not with names, comments or an existing `MODULE.md`.
+- If `MODULE.md` files already exist in the touched area, read their headers first. A contract that disagrees with the code goes under Corrected in Starting point, and the plan fixes one of the two.
