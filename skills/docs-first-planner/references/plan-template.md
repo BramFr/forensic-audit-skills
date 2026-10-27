@@ -38,7 +38,7 @@ The problem or goal in 2-4 sentences, and how it supports the product vision
 Technical choices, tree, dependency direction, boundaries and key interfaces, as in `scaffold-template.md`. Omit this section for changes inside one existing module.
 
 ## Approach
-Numbered steps, each small enough to be done and checked on its own. When a scaffold exists, make it one step per module, so each module can be generated in one pass from its contract.
+Numbered steps, each small enough to be done and checked on its own. When a scaffold exists, make it one step per module, so each module can be generated in one pass from its contract. Code implementation steps are delegated to a clean code-subagent with a lossless `compress_context` Subagent Context Pack (`mcp/context-compressor`).
 1. ...
 
 ## Acceptance criteria
@@ -59,13 +59,16 @@ For bugs, replace "Why" with **Symptom, expected behaviour, how to reproduce** a
 
 ## Index format
 
-`./docs/index.md` has two parts. The skill writes the vision once and keeps it; the table is regenerated.
+`./docs/index.md` has three parts: the product vision, `## Search keywords` (maintained by the planner), and the regenerated tables.
 
 ```markdown
 # Docs index
 
 ## Product vision
 3-5 lines: what the product is for, who it is for, what it is not.
+
+## Search keywords
+[vision-term-1, scale-term-2, domain-term-3, ...]
 
 ## Items
 <!-- INDEX:START -->

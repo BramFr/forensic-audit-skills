@@ -1,0 +1,18 @@
+[project]
+name = "forensic-context-compressor"
+version = "1.0.0"
+description = "Deterministic, 100% lossless MCP context-compressor (Markdown section extraction, table compaction, RFC 8259 JSON minification, and Pipe-DSV for flat lists)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "pydantic>=2.7.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

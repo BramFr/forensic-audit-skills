@@ -7,7 +7,7 @@ summary: Alle skills herkennen de echte oorzaak van een fout (log, symptoom) en 
 tags: [skills, diagnose, forensic-audit, voorbeelden]
 created: 2026-10-23
 updated: 2026-10-23
-related: [feature/02, feature/03]
+related: [feature/02, feature/03, feature/04]
 ---
 
 # Foutdiagnose in alle skills

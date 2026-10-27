@@ -23,6 +23,9 @@ SKELETON = f"""# Docs index
 ## Product vision
 _Not written down yet. Describe in 3-5 lines what the product is for, who it is for and what it is not._
 
+## Search keywords
+[term1, term2, term3]
+
 ## Items
 {START}
 {END}

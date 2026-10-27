@@ -151,7 +151,7 @@ Execute the following 5-step loop sequentially for each of the 10 topics ($\text
 ## Phase 4: Fix & re-test (with approval)
 
 1. Present the findings that have a fix, ordered by severity, and ask the user which fixes to apply (grill-me style: one question at a time, with your recommendation). Apply nothing without approval. In docs-first-planner mode skip this phase (see the last section).
-2. Apply the approved fixes inside the agreed scope only. Prefer the smallest change that satisfies the control; never disable or loosen a guard.
+2. Apply the approved fixes inside the agreed scope only. Prefer the smallest change that satisfies the control; never disable or loosen a guard. **Code-Subagent Isolation:** whenever applying a fix writes or modifies any code (even 1 line), delegate the code edit to a clean code-subagent (`invoke_subagent` / `Agent` tool) with a lossless **Subagent Context Pack** built via `compress_context` (`mcp/context-compressor`: scoped `.md` section, Pipe-DSV `#schema:` for `N >= 2` flat rows, or `JSON_COMPACT`; never use lossy word-pruning or parallel edits to the same file).
 3. Re-test with the same proof that demonstrated the finding (EXECUTED): it must now fail, and other behaviour must still work. Set status FIXED only on that evidence. Max. 5 rounds per finding, then FAIL-CLOSED.
 4. Secrets that were found stay compromised: tell the user to rotate them; never paste new secrets into chat, code or docs.
 

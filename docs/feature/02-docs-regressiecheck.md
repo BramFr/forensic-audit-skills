@@ -7,7 +7,7 @@ summary: De planner voert Check-regels van gerelateerde done-items uit, vooraf e
 tags: [planner, docs, regressie, verificatie]
 created: 2026-10-23
 updated: 2026-10-23
-related: [feature/01, feature/03]
+related: [feature/01, feature/03, feature/04]
 ---
 
 # Docs-controle vooraf en regressiecheck achteraf

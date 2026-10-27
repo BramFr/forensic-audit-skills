@@ -111,7 +111,7 @@ Match BEFORE/AFTER against the standards from Step 3. **Report**: archetype + ou
 
 On deviation choose the recovery archetype: *System Adjustment/Redesign*, *Limit Tightening*, *Component Substitution*, *Parameter Calibration* or *Fail-Closed Fallback*.
 
-- **Path A: DEVIATION**: change the code/CSS/components (never loosen the test), rerun the full test, take **new screenshots** and perform a **HARD ROLLBACK TO STEP 1** on this point. Keep before-and-after screenshots of the fix. Report only: deviated → changed → retest.
+- **Path A: DEVIATION**: change the code/CSS/components (never loosen the test) by delegating any code modification (even 1 line) to a clean code-subagent (`invoke_subagent` / `Agent` tool) with a lossless **Subagent Context Pack** via `compress_context` (`mcp/context-compressor`: scoped `.md` section, Pipe-DSV `#schema:` for `N >= 2` flat rows, or `JSON_COMPACT`; never lossy word-pruning or parallel edits on the same file), rerun the full test, take **new screenshots** and perform a **HARD ROLLBACK TO STEP 1** on this point. Keep before-and-after screenshots of the fix. Report only: deviated → changed → retest.
 - **Path B: 100% APPROVED**: assign `[VERIFIED_PASS]` and **CONTINUE AUTOMATICALLY**.
 - **Circuit breaker**: the same error three times in a row, or 10 attempts without progress → take a fundamentally different route; after that `⛔ FAIL-CLOSED` and report honestly.
 
@@ -135,7 +135,7 @@ Status: `✅ PASS`, `🔁 ROLLBACK→✅` or `⛔ FAIL-CLOSED`. Below the table,
 
 ### PHASE 3: IMPLEMENT MISSING PAGES & FEATURES (only if gap detection or the task requires it)
 
-Apply when the task asks for a page/feature that does not exist or the inventory shows a gap. The order is mandatory, test-first:
+Apply when the task asks for a page/feature that does not exist or the inventory shows a gap. Delegate all code writing/modification (even 1 line) to a clean code-subagent with a lossless **Subagent Context Pack** via `compress_context` (`mcp/context-compressor`). The order is mandatory, test-first:
 1. **RED**: write the failing E2E test first (following the Zero-Hardcode rules) and prove that it fails.
 2. **GREEN**: implement minimally, reusing existing components, design tokens and the API client. Backend contracts via Pydantic V2 (`extra='forbid'`, `str_strip_whitespace=True`); store secrets encrypted, never log them (LBYL: validate before persistence).
 3. **Ergonomics by design**: Hick's Law (minimal choices, smart defaults from environment variables), Fitts' Law (≥ 44×44 px targets), progressive disclosure (layered sections/tabs), clear inline feedback.

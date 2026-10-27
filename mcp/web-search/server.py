@@ -4,7 +4,16 @@ import re
 import sys
 from collections.abc import Mapping
 from typing import Annotated, Any
-from urllib.parse import parse_qs, unquote, urljoin, urlparse
+from urllib.parse import (
+    parse_qs,
+    parse_qsl,
+    unquote,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunsplit,
+)
 
 with contextlib.redirect_stdout(sys.stderr):
     import primp
@@ -64,6 +73,32 @@ _UI_NOISE_RE = re.compile(
     r"Bewaren in Mijn Favorieten|drosnopseG)",
     re.IGNORECASE,
 )
+_BOILERPLATE_LINE_RE = re.compile(
+    r"^(?:Copy|Copied!|Ask AI|Report incorrect code|Edit this page|On this page|"
+    r"Was this page helpful\?|Skip to main content)$",
+    re.IGNORECASE,
+)
+_BOX_BORDER_CHARS = frozenset("┌┐└┘├┤┬┴┼─│═║╔╗╚╝╠╣╦╩╬ ")
+_ASCII_BOX_LINE_RE = re.compile(r"^\+[-=+]{3,}\+$")
+_TRACKING_PARAMS_EXACT = frozenset(
+    {
+        "fbclid",
+        "gclid",
+        "msockid",
+        "amdata",
+        "hash",
+        "itmmeta",
+        "itmprp",
+        "epid",
+        "mkcid",
+        "mkrid",
+        "campid",
+        "toolid",
+        "mkevt",
+        "spm",
+    }
+)
+_TRACKING_PARAM_PREFIXES = ("utm_", "_trk")
 _STOPWORDS = frozenset(
     {
         "de",
@@ -114,6 +149,14 @@ class SearchWebsiteInput(BaseModel):
             "inline in query_or_url). Filters extracted products, listings and text sections on the page "
             "by matching terms from the user's question, and falls back to a 'site:<domain> <filter_query>' "
             "search if 0 items match on the page."
+        ),
+    )
+    include_code: bool = Field(
+        default=False,
+        description=(
+            "Optional flag when fetching an http(s) URL (default False). By default, multi-line code "
+            "blocks (<pre>, ```...```) are stripped while preserving inline <code> values in prose. "
+            "Set to True only when verbatim code examples from a page are explicitly needed."
         ),
     )
 
@@ -376,6 +419,41 @@ def _is_ddg_anomaly(status_code: int, html_text: str) -> bool:
     return "anomaly-modal" in html_text or "cc=botnet" in html_text
 
 
+def _clean_tracking_url(url: str) -> str:
+    """Strip tracking and session query parameters from URLs while preserving functional parameters."""
+    if not url or "?" not in url:
+        return url
+    try:
+        parts = urlsplit(url)
+        if not parts.query:
+            return url
+        kept = [
+            (k, v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if k.lower() not in _TRACKING_PARAMS_EXACT
+            and not k.lower().startswith(_TRACKING_PARAM_PREFIXES)
+        ]
+        return urlunsplit(
+            (
+                parts.scheme,
+                parts.netloc,
+                parts.path,
+                urlencode(kept, doseq=True),
+                parts.fragment,
+            )
+        )
+    except Exception:
+        return url
+
+
+def _escape_dsv_field(val: str, is_url: bool = False) -> str:
+    """Escape a field for Positional Pipe-DSV (#schema:)."""
+    cleaned = " ".join(str(val or "").splitlines()).strip()
+    if is_url:
+        return cleaned.replace("|", "%7C")
+    return cleaned.replace("|", r"\|")
+
+
 def _clean_ddg_href(raw_href: str) -> str:
     href = raw_href.strip()
     if href.startswith("//"):
@@ -384,8 +462,8 @@ def _clean_ddg_href(raw_href: str) -> str:
     if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
         qs = parse_qs(parsed.query)
         if "uddg" in qs and qs["uddg"]:
-            return unquote(qs["uddg"][0])
-    return href
+            return _clean_tracking_url(unquote(qs["uddg"][0]))
+    return _clean_tracking_url(href)
 
 
 def _parse_ddg_html(
@@ -435,7 +513,7 @@ def _search_ddgs_fallback(
 
     cleaned: list[dict[str, Any]] = []
     for item in raw_results or []:
-        href = (item.get("href") or "").strip()
+        href = _clean_tracking_url((item.get("href") or "").strip())
         if _is_ad_url(href):
             continue
         cleaned.append(
@@ -454,7 +532,7 @@ def _extract_json_ld_items(
     tree: Any, base_url: str, max_items: int = 60
 ) -> list[str]:
     """Layer A: Extract Schema.org Product, Offer and ItemList entries from JSON-LD scripts."""
-    items_md: list[str] = []
+    items_dsv: list[str] = []
     seen_titles: set[str] = set()
 
     def _format_product(obj: dict[str, Any]) -> str | None:
@@ -467,7 +545,11 @@ def _extract_json_ld_items(
             offers = offers[0]
         if not raw_url and isinstance(offers, dict):
             raw_url = offers.get("url") or ""
-        item_url = urljoin(base_url, str(raw_url)) if raw_url else ""
+        item_url = (
+            _clean_tracking_url(urljoin(base_url, str(raw_url)))
+            if raw_url
+            else ""
+        )
 
         price_str = ""
         if isinstance(offers, dict):
@@ -477,10 +559,13 @@ def _extract_json_ld_items(
             currency = offers.get("priceCurrency") or "EUR"
             avail = str(offers.get("availability") or "").rsplit("/", 1)[-1]
             if price is not None:
-                # Skip generic category-level SEO placeholder (no URL and price == 1)
-                if not item_url and str(price) in ("1", "1.0", "1.00") and not obj.get("description"):
+                if (
+                    not item_url
+                    and str(price) in ("1", "1.0", "1.00")
+                    and not obj.get("description")
+                ):
                     return None
-                price_str = f" — **{currency} {price}**"
+                price_str = f"{currency} {price}"
                 if avail:
                     price_str += f" ({avail})"
 
@@ -490,7 +575,7 @@ def _extract_json_ld_items(
             rv = agg.get("ratingValue")
             rc = agg.get("reviewCount") or agg.get("ratingCount")
             if rv:
-                rating_str = f" | Rating: {rv}" + (
+                rating_str = f"Rating: {rv}" + (
                     f" ({rc} reviews)" if rc else ""
                 )
 
@@ -503,14 +588,21 @@ def _extract_json_ld_items(
             return None
         seen_titles.add(norm_key)
 
-        head = f"[{name}]({item_url})" if item_url else f"**{name}**"
-        line = f"- {head}{price_str}{rating_str}"
+        details_parts: list[str] = []
+        if rating_str:
+            details_parts.append(rating_str)
         if desc and desc.lower() != name.lower():
-            line += f" — {desc}"
-        return line
+            details_parts.append(desc)
+        details = " — ".join(details_parts)
+        return (
+            f"{_escape_dsv_field(name)}|"
+            f"{_escape_dsv_field(price_str)}|"
+            f"{_escape_dsv_field(item_url, is_url=True)}|"
+            f"{_escape_dsv_field(details)}"
+        )
 
     def _walk_ld(node: Any) -> None:
-        if len(items_md) >= max_items:
+        if len(items_dsv) >= max_items:
             return
         if isinstance(node, list):
             for el in node:
@@ -527,7 +619,7 @@ def _extract_json_ld_items(
             ):
                 formatted = _format_product(node)
                 if formatted:
-                    items_md.append(formatted)
+                    items_dsv.append(formatted)
             elif "ListItem" in types and isinstance(node.get("item"), dict):
                 _walk_ld(node["item"])
             else:
@@ -546,14 +638,14 @@ def _extract_json_ld_items(
             _walk_ld(data)
         except Exception:
             continue
-    return items_md
+    return items_dsv
 
 
 def _extract_hydration_items(
     tree: Any, base_url: str, max_items: int = 60
 ) -> list[str]:
     """Layer B: Extract listing/product items from Next.js __NEXT_DATA__ or SSR state JSON."""
-    items_md: list[str] = []
+    items_dsv: list[str] = []
     seen_titles: set[str] = set()
 
     def _format_candidate(d: dict[str, Any]) -> str | None:
@@ -584,7 +676,7 @@ def _extract_hydration_items(
             or ""
         )
         item_url = (
-            urljoin(base_url, raw_url)
+            _clean_tracking_url(urljoin(base_url, raw_url))
             if isinstance(raw_url, str) and raw_url
             else ""
         )
@@ -599,14 +691,13 @@ def _extract_hydration_items(
         if len(desc) > 180:
             desc = desc[:177] + "..."
 
-        loc = ""
+        city = ""
         if isinstance(d.get("location"), dict):
-            city = (
+            city = str(
                 d["location"].get("cityName")
                 or d["location"].get("countryName")
-            )
-            if city:
-                loc = f" | {city}"
+                or ""
+            ).strip()
 
         if not (price_val or item_url):
             return None
@@ -618,13 +709,17 @@ def _extract_hydration_items(
             return None
         seen_titles.add(norm_key)
 
-        head = f"[{title}]({item_url})" if item_url else f"**{title}**"
-        price_part = f" — **{price_val}**" if price_val else ""
-        desc_part = f" — {desc}" if desc else ""
-        return f"- {head}{price_part}{loc}{desc_part}"
+        details_parts = [p for p in (city, desc) if p]
+        details = " — ".join(details_parts)
+        return (
+            f"{_escape_dsv_field(title)}|"
+            f"{_escape_dsv_field(price_val)}|"
+            f"{_escape_dsv_field(item_url, is_url=True)}|"
+            f"{_escape_dsv_field(details)}"
+        )
 
     def _walk_json(node: Any) -> None:
-        if len(items_md) >= max_items:
+        if len(items_dsv) >= max_items:
             return
         if isinstance(node, list):
             for el in node:
@@ -632,7 +727,7 @@ def _extract_hydration_items(
         elif isinstance(node, dict):
             line = _format_candidate(node)
             if line:
-                items_md.append(line)
+                items_dsv.append(line)
             for v in node.values():
                 if isinstance(v, (dict, list)):
                     _walk_json(v)
@@ -645,14 +740,14 @@ def _extract_hydration_items(
             _walk_json(data)
         except Exception:
             continue
-    return items_md
+    return items_dsv
 
 
 def _extract_dom_cards(
     tree: Any, base_url: str, max_items: int = 60
 ) -> list[str]:
     """Layer C: Extract repeating product/result cards from generic semantic DOM structures."""
-    items_md: list[str] = []
+    items_dsv: list[str] = []
     seen_titles: set[str] = set()
     xpath_cards = (
         "//li[contains(@class, 's-card') or contains(@class, 's-item') "
@@ -660,10 +755,14 @@ def _extract_dom_cards(
         "or contains(@class, 'result')]"
         " | //div[contains(@class, 's-card') or contains(@class, 'product-card') "
         "or contains(@class, 'search-result')]"
-        " | //article"
     )
-    for card in tree.xpath(xpath_cards):
-        if len(items_md) >= max_items:
+    cards = tree.xpath(xpath_cards)
+    if not cards:
+        article_nodes = tree.xpath("//article")
+        if len(article_nodes) >= 2:
+            cards = article_nodes
+    for card in cards:
+        if len(items_dsv) >= max_items:
             break
         title_nodes = card.xpath(
             ".//*[contains(@class, 's-card__title') or contains(@class, 's-item__title') "
@@ -690,7 +789,7 @@ def _extract_dom_cards(
         for a in card.xpath(".//a[@href]"):
             h = (a.get("href") or "").strip()
             if h and not h.startswith(("#", "javascript:")):
-                href = urljoin(base_url, h)
+                href = _clean_tracking_url(urljoin(base_url, h))
                 break
         if "itm/123456" in href:
             continue
@@ -709,10 +808,38 @@ def _extract_dom_cards(
             continue
         seen_titles.add(norm_title)
 
-        head = f"[{title}]({href})" if href else f"**{title}**"
-        line = f"- {head}" + (f" — {details}" if details else "")
-        items_md.append(line)
-    return items_md
+        price_match = re.search(
+            r"(?:EUR|USD|GBP|€|\$)\s*\d+(?:[.,]\d{1,2})?", details
+        )
+        price_str = price_match.group(0).strip() if price_match else ""
+        items_dsv.append(
+            f"{_escape_dsv_field(title)}|"
+            f"{_escape_dsv_field(price_str)}|"
+            f"{_escape_dsv_field(href, is_url=True)}|"
+            f"{_escape_dsv_field(details)}"
+        )
+    return items_dsv
+
+
+def _format_structured_items(
+    items: list[Any], heading: str = "## Extracted Items"
+) -> str:
+    """Format extracted catalog/product items in Positional Pipe-DSV (#schema:title|price|url|details)."""
+    if not items:
+        return ""
+    rows = [f"{heading} ({len(items)})", "#schema:title|price|url|details"]
+    for item in items:
+        if isinstance(item, dict):
+            t = _escape_dsv_field(item.get("title", ""))
+            p = _escape_dsv_field(item.get("price", ""))
+            u = _escape_dsv_field(
+                _clean_tracking_url(str(item.get("url", ""))), is_url=True
+            )
+            d = _escape_dsv_field(item.get("details", ""))
+            rows.append(f"{t}|{p}|{u}|{d}")
+        else:
+            rows.append(str(item))
+    return "\n".join(rows)
 
 
 def _extract_portal_headlines(html_text: str, base_url: str) -> str:
@@ -739,7 +866,7 @@ def _extract_portal_headlines(html_text: str, base_url: str) -> str:
             or href.startswith("javascript:")
         ):
             continue
-        full_url = urljoin(base_url, href)
+        full_url = _clean_tracking_url(urljoin(base_url, href))
         key = f"{text}|{full_url}"
         if key in seen:
             continue
@@ -748,17 +875,143 @@ def _extract_portal_headlines(html_text: str, base_url: str) -> str:
     return "\n".join(items)
 
 
-def _html_to_markdown(html_text: str, url: str) -> str | None:
+def _is_box_drawing_line(stripped: str) -> bool:
+    """Detect pure Unicode/ASCII box-drawing lines without touching Markdown tables."""
+    if not stripped:
+        return False
+    if _ASCII_BOX_LINE_RE.match(stripped):
+        return True
+    if any(ch in _BOX_BORDER_CHARS - {" "} for ch in stripped):
+        if all(ch in _BOX_BORDER_CHARS for ch in stripped):
+            return True
+        if stripped.startswith(
+            ("┌", "└", "├", "│", "╔", "╚", "║")
+        ) and stripped.endswith(("┐", "┘", "┤", "│", "╗", "╝", "║")):
+            return True
+    return False
+
+
+def _clean_plain_text_body(text: str, include_code: bool = False) -> str:
+    """Clean extracted HTML/PDF body text: strip permalinks, inline link URLs, formatting, UI buttons & code fences."""
+    if not text:
+        return ""
+    working = text
+    if not include_code:
+        working = re.sub(r"`([^`\n]+)`", r"\1", working)
+
+    out_lines: list[str] = []
+    in_fenced_code = False
+    for raw_line in working.splitlines():
+        if "itm/123456" in raw_line:
+            continue
+        stripped_raw = raw_line.strip()
+        if stripped_raw.startswith(("```", "~~~")):
+            if include_code:
+                in_fenced_code = not in_fenced_code
+                out_lines.append(raw_line.rstrip())
+            continue
+        if in_fenced_code:
+            out_lines.append(raw_line.rstrip())
+            continue
+
+        line = _UI_NOISE_RE.sub("", raw_line)
+        line = re.sub(
+            r"\[(?:#|¶|permalink)\]\([^)]*\)", "", line, flags=re.IGNORECASE
+        )
+        if line.lstrip().startswith("#"):
+            line = re.sub(r"\s*[#¶]+\s*$", "", line)
+        line = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", line)
+        line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
+        line = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)
+        line = re.sub(r"__([^_]+)__", r"\1", line)
+
+        s = line.strip()
+        if _BOILERPLATE_LINE_RE.match(s):
+            continue
+        if _is_box_drawing_line(s):
+            continue
+        out_lines.append(line.rstrip())
+
+    cleaned = "\n".join(out_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _extract_main_markdown(
+    html_text: str, url: str, include_code: bool = False
+) -> str:
+    """Extract main readable text via trafilatura keeping visible <pre> blocks while stripping hidden website scripts/styles."""
+    prune_xpath = ["//script", "//style", "//svg", "//noscript", "//iframe"]
     extracted = trafilatura.extract(
         html_text,
         url=url,
         output_format="markdown",
         include_tables=True,
-        include_links=True,
-        include_formatting=True,
+        include_links=False,
+        include_formatting=False,
         favor_recall=True,
+        prune_xpath=prune_xpath,
     )
     body = (extracted or "").strip()
+    if body or "<pre" in html_text.lower():
+        try:
+            tree = lxml_html.fromstring(html_text)
+            for bad in tree.xpath("//script | //style | //svg | //noscript | //iframe"):
+                parent = bad.getparent()
+                if parent is not None:
+                    parent.remove(bad)
+            heading_map: dict[str, str] = {}
+            for level, tag in (("#", "h1"), ("##", "h2"), ("###", "h3")):
+                for h_node in tree.xpath(f"//{tag}"):
+                    h_txt = " ".join(h_node.text_content().split())
+                    h_txt = re.sub(r"\s*[#¶]+\s*$", "", h_txt).strip()
+                    if h_txt and h_txt not in heading_map:
+                        heading_map[h_txt] = f"{level} {h_txt}"
+            if heading_map and body:
+                restored_lines: list[str] = []
+                for line in body.splitlines():
+                    s_line = re.sub(
+                        r"\s*[#¶]+\s*$", "", line.strip()
+                    ).strip()
+                    if s_line in heading_map:
+                        restored_lines.append("")
+                        restored_lines.append(heading_map[s_line])
+                        restored_lines.append("")
+                    else:
+                        restored_lines.append(line)
+                body = "\n".join(restored_lines)
+
+            for pre in tree.xpath("//article//pre | //main//pre | //body//pre | //pre"):
+                pre_txt = pre.text_content().strip()
+                if not pre_txt:
+                    continue
+                first_line = next(
+                    (l.strip() for l in pre_txt.splitlines() if l.strip()), ""
+                )
+                if pre_txt in body:
+                    if include_code and f"```\n{pre_txt}\n```" not in body:
+                        body = body.replace(
+                            pre_txt, f"```\n{pre_txt}\n```", 1
+                        )
+                elif not first_line or first_line not in body:
+                    if include_code:
+                        body = f"{body}\n\n```\n{pre_txt}\n```".strip()
+                    else:
+                        body = f"{body}\n\n{pre_txt}".strip()
+        except Exception:
+            pass
+    return _clean_plain_text_body(body, include_code=include_code)
+
+
+def _html_to_markdown(
+    html_text: str,
+    url: str,
+    filter_query: str | None = None,
+    include_code: bool = False,
+) -> str | None:
+    cleaned_body = _extract_main_markdown(
+        html_text, url, include_code=include_code
+    )
 
     structured_items: list[str] = []
     try:
@@ -779,25 +1032,35 @@ def _html_to_markdown(html_text: str, url: str) -> str | None:
 
     sections: list[str] = []
     if structured_items:
-        sections.append(
-            f"## Extracted Items ({len(structured_items)})\n\n"
-            + "\n".join(structured_items)
-        )
+        sections.append(_format_structured_items(structured_items))
 
-    if len(html_text) > 30000 and len(body) < 4000 and not structured_items:
+    if (
+        len(html_text) > 30000
+        and len(cleaned_body) < 4000
+        and not structured_items
+    ):
         headlines = _extract_portal_headlines(html_text, url)
         if headlines:
             sections.append(headlines)
 
-    if body:
-        cleaned_body_lines = [
-            _UI_NOISE_RE.sub("", line).rstrip()
-            for line in body.splitlines()
-            if "itm/123456" not in line
-        ]
-        cleaned_body = "\n".join(cleaned_body_lines).strip()
-        if cleaned_body:
-            sections.append(cleaned_body)
+    skip_duplicate_body = False
+    if len(structured_items) >= 5:
+        if not filter_query:
+            skip_duplicate_body = True
+        else:
+            raw_terms = [
+                t.lower()
+                for t in re.split(r"\W+", filter_query)
+                if len(t) >= 2 and t.lower() not in _STOPWORDS
+            ] or [filter_query.strip().lower()]
+            if any(
+                any(term in item.lower() for term in raw_terms)
+                for item in structured_items
+            ):
+                skip_duplicate_body = True
+
+    if cleaned_body and not skip_duplicate_body:
+        sections.append(cleaned_body)
 
     combined = "\n\n".join(s for s in sections if s).strip()
     return combined or None
@@ -806,7 +1069,7 @@ def _html_to_markdown(html_text: str, url: str) -> str | None:
 def _apply_content_filter(
     markdown_body: str, url: str, filter_query: str
 ) -> str:
-    """Filter extracted Markdown items/paragraphs by filter_query; fallback to site: search if 0 match."""
+    """Filter extracted Markdown items/blocks by filter_query; return Headings Index + Filtered Matches only."""
     raw_terms = [
         t.lower()
         for t in re.split(r"\W+", filter_query)
@@ -815,24 +1078,58 @@ def _apply_content_filter(
     if not raw_terms:
         raw_terms = [filter_query.strip().lower()]
 
-    scored_matches: list[tuple[int, int, str]] = []
-    for idx, line in enumerate(markdown_body.splitlines()):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+    headings: list[str] = []
+    for line in markdown_body.splitlines():
+        s = line.strip()
+        if s.startswith("#") and not s.startswith("#schema:"):
+            clean_h = re.sub(
+                r"\[(?:#|¶|permalink)\]\([^)]*\)", "", s, flags=re.IGNORECASE
+            ).strip()
+            clean_h = re.sub(r"\s*[#¶]+\s*$", "", clean_h).strip()
+            if clean_h and clean_h not in headings and len(headings) < 25:
+                headings.append(clean_h)
+
+    blocks: list[str] = []
+    for chunk in re.split(r"\n\s*\n", markdown_body):
+        c = chunk.strip()
+        if not c:
             continue
-        lowered = stripped.lower()
+        if "#schema:" in c or c.startswith("## Extracted Items"):
+            for row in c.splitlines():
+                rs = row.strip()
+                if rs and not rs.startswith("#"):
+                    blocks.append(rs)
+        elif "\n" in c and not c.startswith(("```", "|")):
+            for row in c.splitlines():
+                rs = row.strip()
+                if rs and not rs.startswith("#"):
+                    blocks.append(rs)
+        elif not c.startswith("#"):
+            blocks.append(c)
+
+    scored: list[tuple[int, int, str]] = []
+    for idx, block in enumerate(blocks):
+        if block.startswith("#") and "\n" not in block:
+            continue
+        lowered = block.lower()
         hits = sum(1 for term in raw_terms if term in lowered)
         if hits > 0:
-            scored_matches.append((hits, -idx, stripped))
+            scored.append((hits, -idx, block))
 
-    if scored_matches:
-        scored_matches.sort(reverse=True)
-        matched_lines = [item[2] for item in scored_matches[:40]]
+    toc = (
+        "## Page Headings Index\n" + "\n".join(headings) + "\n\n"
+        if headings
+        else ""
+    )
+
+    if scored:
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        selected = [item[2] for item in scored[:40]]
         filter_block = (
-            f"## Filtered Matches for `{filter_query}` ({len(matched_lines)} matches)\n\n"
-            + "\n".join(matched_lines)
+            f"## Filtered Matches ({len(selected)} of {len(blocks)} blocks matching `{filter_query}`)\n\n"
+            + "\n\n".join(selected)
         )
-        return f"{filter_block}\n\n---\n\n{markdown_body}"
+        return f"{toc}{filter_block}"
 
     parsed = urlparse(url)
     domain = parsed.netloc.lower()
@@ -847,11 +1144,14 @@ def _apply_content_filter(
         f"## Filtered Matches for `{filter_query}` (0 direct matches on page; `site:{domain}` fallback below)\n\n"
         f"{site_fallback}"
     )
-    return f"{fallback_block}\n\n---\n\n{markdown_body}"
+    summary_excerpt = markdown_body[:2500].strip()
+    if summary_excerpt:
+        return f"{toc}{fallback_block}\n\n---\n\n{summary_excerpt}"
+    return f"{toc}{fallback_block}"
 
 
 def _fetch_url_as_markdown(
-    url: str, filter_query: str | None = None
+    url: str, filter_query: str | None = None, include_code: bool = False
 ) -> str:
     try:
         response = _http_get(url)
@@ -875,7 +1175,12 @@ def _fetch_url_as_markdown(
             if rendered_html and not _is_antibot_or_error_page(
                 200, rendered_html, url
             ):
-                md_from_browser = _html_to_markdown(rendered_html, url)
+                md_from_browser = _html_to_markdown(
+                    rendered_html,
+                    url,
+                    filter_query=filter_query,
+                    include_code=include_code,
+                )
                 if md_from_browser:
                     if filter_query:
                         md_from_browser = _apply_content_filter(
@@ -904,7 +1209,11 @@ def _fetch_url_as_markdown(
 
             if not md_text or not md_text.strip():
                 return f"ERROR: PDF at '{url}' contained no extractable text."
-            body_out = md_text.strip()
+            body_out = _clean_plain_text_body(
+                md_text, include_code=include_code
+            )
+            if not body_out:
+                body_out = md_text.strip()
             if filter_query:
                 body_out = _apply_content_filter(body_out, url, filter_query)
             return f"# Source: {url}\n\n{body_out}"
@@ -919,13 +1228,23 @@ def _fetch_url_as_markdown(
                 body_out = _apply_content_filter(body_out, url, filter_query)
             return f"# Source: {url}\n\n{body_out}"
 
-        md_body = _html_to_markdown(response.text, url)
+        md_body = _html_to_markdown(
+            response.text,
+            url,
+            filter_query=filter_query,
+            include_code=include_code,
+        )
         if not md_body:
             rendered_html = _fetch_html_via_browser(url)
             if rendered_html and not _is_antibot_or_error_page(
                 200, rendered_html, url
             ):
-                md_body = _html_to_markdown(rendered_html, url)
+                md_body = _html_to_markdown(
+                    rendered_html,
+                    url,
+                    filter_query=filter_query,
+                    include_code=include_code,
+                )
 
         if not md_body:
             return (
@@ -975,16 +1294,17 @@ def _search_duckduckgo(query: str) -> str:
     if not results:
         return f"No DuckDuckGo results found for query: '{query}'."
 
-    lines = [f"# DuckDuckGo Search Results for: `{query}`\n"]
+    lines = [
+        f"# DuckDuckGo Search Results for: `{query}`",
+        "#schema:idx|title|url|snippet",
+    ]
     for idx, item in enumerate(results, start=1):
-        title = item.get("title") or "Untitled"
-        href = item.get("href") or ""
-        body = item.get("body") or ""
-        lines.append(f"## {idx}. [{title}]({href})")
-        lines.append(f"- **URL**: {href}")
-        if body:
-            lines.append(f"- **Snippet**: {body}")
-        lines.append("")
+        title = _escape_dsv_field(item.get("title") or "Untitled")
+        href = _escape_dsv_field(
+            _clean_tracking_url(item.get("href") or ""), is_url=True
+        )
+        body = _escape_dsv_field(item.get("body") or "")
+        lines.append(f"{idx}|{title}|{href}|{body}")
     return "\n".join(lines).strip()
 
 
@@ -1017,16 +1337,33 @@ def search_website(
             ),
         ),
     ] = None,
+    include_code: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "Optional flag when fetching an http(s) URL (default False). By default, multi-line code "
+                "blocks (<pre>, ```...```) are stripped while preserving inline <code> values in prose. "
+                "Set to True only when verbatim code examples from a page are explicitly needed."
+            ),
+        ),
+    ] = False,
 ) -> str:
-    """Search DuckDuckGo for a query, or fetch a webpage/PDF/catalog as Markdown for an http(s) URL (with optional filter_query or inline 'https://... <keywords>'). MANDATORY BEFORE SEARCHING: check whether ./docs/index.md exists with '## Search keywords'. If present, always include 1 to 3 fitting keywords from '## Search keywords' in every search query (1-2 leading vision/scale priority terms for architecture/UI/scale/performance queries, or 1-2 technical domain terms for protocol/RFC/standard queries; never 0 keywords)."""
+    """Search DuckDuckGo for a query, or fetch a webpage/PDF/catalog as Markdown for an http(s) URL (with optional filter_query or inline 'https://... <keywords>' and include_code=False by default). MANDATORY BEFORE SEARCHING: check whether ./docs/index.md exists with '## Search keywords'. If present, always include 1 to 3 fitting keywords from '## Search keywords' in every search query (1-2 leading vision/scale priority terms for architecture/UI/scale/performance queries, or 1-2 technical domain terms for protocol/RFC/standard queries; never 0 keywords)."""
     validated = SearchWebsiteInput(
-        query_or_url=query_or_url, filter_query=filter_query
+        query_or_url=query_or_url,
+        filter_query=filter_query,
+        include_code=include_code,
     )
     target, active_filter = _split_url_and_filter(
         validated.query_or_url, validated.filter_query
     )
     if _is_url(target):
-        return _fetch_url_as_markdown(target, filter_query=active_filter)
+        return _fetch_url_as_markdown(
+            target,
+            filter_query=active_filter,
+            include_code=validated.include_code,
+        )
     return _search_duckduckgo(target)
 
 

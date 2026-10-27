@@ -53,6 +53,14 @@ For the full procedures, see `skills/forensic-audit/SKILL.md`, `skills/forensic-
 - Follow seven steps in any domain: **Discover** (derive subject and jurisdiction; search live for the signal and highest authority: law/ISO/NEN/IEC/RFC -> regulator -> manufacturer/spec docs -> guild/peer-reviewed source; for paywalled ISO/NEN standards, name the standard and open its free open primary counterpart), **Quote** (mask secrets), **Signal** (first deviation at its origin, not the wrapper), **Guard** (satisfy deliberate guards, never weaken them), **Hypotheses** (at most 3, each with a cheap test), **Fix**, and **Confirm**.
 - Whenever a wrong fix could cause injury, harm, fire, legal breach, major financial loss or irreversible damage, stop and refer to the qualified professional defined by the governing standard.
 
+## 7. Code-Subagent Isolation & Lossless Context Pack
+
+**Isolate code edits from long audit/planning contexts.**
+
+- For every code write or modification (even 1 line), spawn a fresh code-subagent (`invoke_subagent` / `Agent` tool) with a lossless **Subagent Context Pack** prepared via `compress_context` (`mcp/context-compressor`).
+- Use deterministic structural compression only: Markdown section scoping (`section` / `MODULE.md`), Pipe-DSV (`#schema:`) for homogeneous flat lists with `N >= 2` rows, or `JSON_COMPACT` for nested/sparse records.
+- Never use lossy token/word pruning on code, paths, commands or schemas, and never run parallel subagents that edit the same file.
+
 ---
 
 **These guidelines are working if:** audits report real deviations, rollbacks are rare after the first pass, and the negative declaration is never empty by accident.

@@ -21,7 +21,8 @@ AI-generated output tends to look right without being right:
 | [**forensic-site-audit**](skills/forensic-site-audit/SKILL.md) | Crawl a website or web app, test every feature against the live backend, capture and judge screenshots | Brittle tests, missing evidence, untested pages, UX defects |
 | [**forensic-security-audit**](skills/forensic-security-audit/SKILL.md) | Security audit of a codebase within a scope you name: find, prove, fix and re-test vulnerabilities, secrets, dependency and configuration risks; severity per finding, no hardcoded sources | Fake security, unverified "it is safe", leaked secrets, vulnerable dependencies |
 | [**docs-first-planner**](skills/docs-first-planner/SKILL.md) | Turn a wish, feature or bug into an audited, approved plan stored in `./docs` (docs check, forensic audit, grill, plan, persist) with `scripts/docs_tool.py` for numbering, index and checks | Vibe coding: unverified beliefs, duplicate or contradicting features, lost rationale |
-| [**mcp/web-search**](mcp/web-search/README.md) | Single-tool MCP server (`search_website`): DuckDuckGo search (`🔍 SNIPPET`) + untruncated HTML/PDF to Markdown (`🔎 SOURCED`), no API keys | Unopened primary sources, unreadable PDF datasheets/standards, paid search API lock-in |
+| [**mcp/web-search**](mcp/web-search/README.md) | Single-tool MCP server (`search_website`): DuckDuckGo search (`🔍 SNIPPET`) + untruncated HTML/PDF extraction (`🔎 SOURCED`) with built-in lossless token optimization (Pipe-DSV `#schema:`, plain-text body without inline link/markup bloat, tracking-URL stripping, catalog deduplication, and `filter_query` section scoping), no API keys | Unopened primary sources, unreadable PDF datasheets/standards, paid search API lock-in, web-scraping token bloat (-22% to -79% tokens) |
+| [**mcp/context-compressor**](mcp/context-compressor/README.md) | Single-tool MCP server (`compress_context`): 100% lossless structural context compression (Markdown section scoping, Pipe-DSV `#schema:`, `JSON_COMPACT`) for clean code-subagent context packs | Context rot during long audits, token bloat from prose/Markdown tables (-48% to -89% tokens), syntax-breaking lossy compression |
 
 Both skills run **in a single request**, with no mid-way questions, and report **conclusions only**.
 
@@ -114,12 +115,13 @@ This installs both skills plus [GEMINI.md](GEMINI.md) as context. Alternatively 
 
 Copy `skills/forensic-audit/` and/or `skills/forensic-site-audit/` into your workspace `.agents/skills/` or the global skills directory. The `SKILL.md` format is the same.
 
-### Companion MCP Server (`web-search` / `search_website`)
+### Companion MCP Servers (`web-search` & `context-compressor`)
 
-To give your agent keyless DuckDuckGo search (`🔍 SNIPPET`) and full HTML/PDF-to-Markdown extraction (`🔎 SOURCED`) via a single tool (`search_website`), sync [`mcp/web-search`](mcp/web-search/README.md) with `uv` and add it to your MCP configuration (for example `~/.gemini/config/mcp_config.json`, `.cursor/mcp.json`, or `~/.claude.json`):
+To give your agent keyless DuckDuckGo search (`🔍 SNIPPET`), full HTML/PDF-to-Markdown extraction (`🔎 SOURCED`) via `search_website`, and 100% lossless structural context compression (`compress_context`) for clean code-subagent context packs, sync [`mcp/web-search`](mcp/web-search/README.md) and [`mcp/context-compressor`](mcp/context-compressor/README.md) with `uv` and add them to your MCP configuration (for example `~/.gemini/config/mcp_config.json`, `.cursor/mcp.json`, or `~/.claude.json`):
 
 ```bash
 uv sync --directory mcp/web-search
+uv sync --directory mcp/context-compressor
 ```
 
 ```json
@@ -134,10 +136,34 @@ uv sync --directory mcp/web-search
         "python",
         "server.py"
       ]
+    },
+    "context-compressor": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/absolute/path/to/forensic-audit-skills/mcp/context-compressor",
+        "python",
+        "server.py"
+      ]
     }
   }
 }
 ```
+
+Whenever any skill writes or modifies code (even 1 line), it delegates the edit to a fresh code-subagent with a lossless **Subagent Context Pack** built via `compress_context` (scoped `.md` section / `MODULE.md`, Pipe-DSV `#schema:` for flat lists with `N >= 2` rows, or `JSON_COMPACT` for nested/sparse data; never lossy token pruning).
+
+#### Lossless Token Savings (Measured `o200k_base` Benchmarks)
+
+Both MCP servers reduce context token consumption with **0% information or quote loss**:
+
+| Optimization Layer | Mechanism | Measured Token Reduction (`o200k_base`) |
+|---|---|---|
+| **Code-Subagent Context Pack (`mcp/context-compressor`)** | Scoped `.md` section extraction + table compaction + Pipe-DSV (`#schema:`) / `JSON_COMPACT` sent to an isolated code-subagent | **-48.5% to -81.5% BPE tokens** (and **-48.4% real API `input_tokens`** in live multi-file A/B subagent benchmarks, with 100% identical test & audit output) |
+| **`web-search` Filtered Page Scoping (`filter_query`)** | Returns a compact `## Page Headings Index` + `## Filtered Matches` without re-appending the raw 50–88 KB page body underneath | **-72.5% tokens** across 18 scraped documentation & specification pages |
+| **`web-search` Catalog & E-Commerce Extraction** | Positional Pipe-DSV (`#schema:title\|price\|url\|details`), URL tracking/hash parameter stripping (`utm_*`, `fbclid`, `gclid`, `_trk*`, `hash`, `itmmeta`), and deduplication of trailing `trafilatura` noise when `>= 5` structured items exist | **-79.3% tokens** on 40-item catalog pages |
+| **`web-search` Pure Readable Text + Visible `<pre>` Code** | Strips invisible website code (`<script>`, `<style>`, `<svg>`, `<noscript>`), inline `[anchor](https://...)` URL targets, `[#]` permalinks, UI button noise (`Copy`, `Edit this page`), and Markdown formatting wrappers while keeping all visible article text, tables, and `<pre>`/`<code>` code examples intact as plain text | **-22.4% to -64.7% tokens** across technical docs and RFCs |
+| **`web-search` DuckDuckGo Search Results** | Positional Pipe-DSV (`#schema:idx\|title\|url\|snippet`) instead of repeated Markdown headings and bullet labels | **-24.2% tokens** across search queries |
 
 ## Usage
 
@@ -174,12 +200,18 @@ forensic-audit-skills/
 │   └── plugin.json
 ├── .cursor/rules/forensic-audit.mdc
 ├── mcp/
+│   ├── context-compressor/
+│   │   ├── pyproject.toml
+│   │   ├── README.md
+│   │   ├── server.py
+│   │   └── tests/test_server.py
 │   └── web-search/
 │       ├── pyproject.toml
 │       ├── README.md
 │       ├── server.py
 │       └── tests/test_server.py
 ├── skills/
+│   ├── docs-first-planner/SKILL.md
 │   ├── forensic-audit/SKILL.md
 │   ├── forensic-security-audit/SKILL.md
 │   └── forensic-site-audit/SKILL.md

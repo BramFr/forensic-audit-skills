@@ -16,7 +16,7 @@ Every point needs at least one of:
 - the output of a command or test that was actually run,
 - a primary source (official docs, spec, release notes) that was opened, not only a search snippet.
 
-A docs item, a comment or a function name is a hypothesis, not evidence. Run the search for every point and record the status (🔎 / 🔍 / ⚠️ / 🚫) as forensic-audit defines it.
+A docs item, a comment or a function name is a hypothesis, not evidence. Before running any external search (`search_website`), check whether `./docs/index.md` exists with a `## Search keywords` section: when present, include 1 to 3 fitting keywords per query (`{selected keywords} {query}`: 1–2 leading vision/scale priority terms for architecture/UI/scale/performance queries, or 1–2 technical domain terms for protocol/RFC/spec queries; sending 0 keywords when present counts as `🚫 NOT SEARCHED`). Run the search for every point and record the status (🔎 / 🔍 / ⚠️ / 🚫) as forensic-audit defines it.
 
 ## Mapping the compact report onto the plan
 
@@ -34,6 +34,7 @@ When the grill changes scope, approach or dependencies, audit only the new or ch
 ## Evidence rules (what counts)
 
 - **🔎 holds per claim, not per page.** A page only counts as opened when you saw the text that proves or refutes that claim (grep the fetched output for it). A page that returned only navigation, a 404 text, an empty list or no mention of the claim is 🔍 at best.
+- **Project `## Search keywords` (`./docs/index.md`).** If `./docs/index.md` has `## Search keywords`, every external query must include 1–3 matching keywords from that list (1–2 leading vision/scale priority terms from the start of the list for architecture/UI/scale/performance queries, or 1–2 technical domain terms for protocol/RFC/spec queries, stripping `+` punctuation); a query sent with 0 project keywords when `## Search keywords` is present counts as `🚫 NOT SEARCHED`.
 - **Secondary sources are 🔍.** A commercial or knowledge-base page, or a primary source seen only through someone else's quote (for example a drug compendium quoting a guideline), never gives 🔎 for the original claim.
 - **Gated or blocked primary sources** (paid standards such as ISO, NEN or IEC, or HTTP 401/403 after one retry): always name the formal standard (identifier + title) AND search for its free **open primary counterpart** (the law or regulation referencing it on `wetten.overheid.nl` or `eur-lex.europa.eu`, public standards/regulators such as NIST, UNECE, NCSC, OWASP, NVWA, RDW, NHG or LICG, or the official manufacturer datasheet/manual). If the open primary counterpart proves the claim, record both and mark 🔎 SOURCED; if neither can be opened, record 🔍 plus "primary gated" in the source gaps (at most 🟡, never ✅).
 - **No primary source exists** (for example typical brake-pad lifetime in km): ⚠️ NO SOURCE FOUND, status 🟡 or ❓, listed under Unverified in the plan. Do not upgrade it with marketing pages.

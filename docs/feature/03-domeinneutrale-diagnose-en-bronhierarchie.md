@@ -7,7 +7,7 @@ summary: Diagnose in alle skills start met Discover en bronhierarchie (incl. ope
 tags: [skills, diagnose, domeinneutraal, bronnen, normen]
 created: 2026-10-23
 updated: 2026-10-23
-related: [feature/01, feature/02]
+related: [feature/01, feature/02, feature/04]
 ---
 
 # Domeinneutrale diagnose met bronhierarchie en live zoeken

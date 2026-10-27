@@ -302,12 +302,20 @@ def test_layer_b_hydration_next_data_extraction_and_inline_filter(monkeypatch):
 
     monkeypatch.setattr("server._http_get", fake_get)
 
+    out_all = search_website("https://www.marktplaats.nl/q/venray/")
+    assert "## Extracted Items (2)" in out_all
+    assert "#schema:title|price|url|details" in out_all
+    assert "Dexcom G7 45 per stuk" in out_all
+    assert "EUR 45.00" in out_all
+    assert "Professionele dakdekker Limburg" in out_all
+
     out = search_website("https://www.marktplaats.nl/q/venray/ dakdekker")
-    assert "## Filtered Matches for `dakdekker` (1 matches)" in out
-    assert "Professionele dakdekker Limburg" in out
+    assert "## Page Headings Index" in out
     assert "## Extracted Items (2)" in out
-    assert "Dexcom G7 45 per stuk" in out
-    assert "EUR 45.00" in out
+    assert "blocks matching `dakdekker`" in out
+    assert "Professionele dakdekker Limburg" in out
+    assert "Dexcom G7 45 per stuk" not in out
+    assert "\n\n---\n\n" not in out
 
 
 def test_layer_c_dom_cards_and_site_fallback_on_zero_matches(monkeypatch):
@@ -487,3 +495,178 @@ def test_ddg_empty_200_and_ddgs_no_results_returns_no_results_message(monkeypatc
         out
         == "No DuckDuckGo results found for query: 'nonexistent_xyz_query_987654321'."
     )
+
+
+def test_code_and_plain_text_preserves_inline_code_values(monkeypatch):
+    """Tip 3 & 4 + bugs/04: include_code=False keeps inline <code> and visible <pre> code as plain text without ``` fences, strips <script>/<style>, inline URLs and trailing '#'; include_code=True keeps ``` fences."""
+    html_doc = (
+        "<html><head><style>.hidden { display: none; }</style>"
+        "<script>const secretToken = 'xyz_hidden_js';</script></head>"
+        "<body><article>"
+        "<h1>FastMCP Guide<a href='#fastmcp-guide'>#</a></h1>"
+        "<p>Timeout is <code>30.0</code> seconds with "
+        "<a href=\"https://example.org/x\">inline link</a> and <strong>bold text</strong>.</p>"
+        "<pre><code># define document and load it with LXML\ndef big_block(): pass</code></pre>"
+        "</article></body></html>"
+    )
+
+    def fake_get(url, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=html_doc,
+            request=request,
+        )
+
+    monkeypatch.setattr("server._http_get", fake_get)
+
+    out_no_code = search_website("https://example.org/docs")
+    assert "# FastMCP Guide" in out_no_code
+    assert "# FastMCP Guide#" not in out_no_code
+    assert "30.0" in out_no_code
+    assert "inline link" in out_no_code
+    assert "bold text" in out_no_code
+    assert "# define document and load it with LXML" in out_no_code
+    assert "def big_block(): pass" in out_no_code
+    assert "```" not in out_no_code
+    assert "secretToken" not in out_no_code
+    assert "display: none" not in out_no_code
+    assert "https://example.org/x" not in out_no_code
+    assert "[#]" not in out_no_code
+
+    out_with_code = search_website(
+        "https://example.org/docs", include_code=True
+    )
+    assert "30.0" in out_with_code
+    assert "# define document and load it with LXML" in out_with_code
+    assert "def big_block(): pass" in out_with_code
+    assert "```" in out_with_code
+
+
+def test_tip1_filter_omits_duplicate_raw_body_and_keeps_headings_index(monkeypatch):
+    """Tip 1: _apply_content_filter returns Page Headings Index + Filtered Matches without appending full raw page."""
+    html_doc = (
+        "<html><body><article>"
+        "<h1>Architecture Overview</h1>"
+        "<p>Unrelated introductory paragraph with lots of prose that does not match.</p>"
+        "<h2>Token Budget Controls</h2>"
+        "<p>Enforce strict timeout budgets of 30 seconds on every outbound request.</p>"
+        "</article></body></html>"
+    )
+
+    def fake_get(url, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=html_doc,
+            request=request,
+        )
+
+    monkeypatch.setattr("server._http_get", fake_get)
+
+    out = search_website(
+        "https://example.org/arch", filter_query="timeout budgets"
+    )
+    assert "## Page Headings Index" in out
+    assert "## Filtered Matches (" in out
+    assert "blocks matching `timeout budgets`" in out
+    assert "Enforce strict timeout budgets of 30 seconds" in out
+    assert "Unrelated introductory paragraph" not in out
+    assert "\n\n---\n\n" not in out
+
+
+def test_tip2_and_tip5_dsv_schema_and_tracking_url_cleanup(monkeypatch):
+    """Tip 2 & 5: DDG and Extracted Items use #schema: Pipe-DSV and strip tracking query params."""
+    ddg_html = """
+    <html><body>
+      <div class="result__body">
+        <a class="result__a" href="https://example.org/item?id=42&utm_source=ddg&fbclid=abc123">Pipe | Title</a>
+        <a class="result__snippet">Snippet with | pipe and clean URL.</a>
+      </div>
+    </body></html>
+    """
+
+    def fake_post(url, data, **kwargs):
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, text=ddg_html, request=request)
+
+    monkeypatch.setattr("server._http_post", fake_post)
+
+    out = search_website("pipe dsv test")
+    assert "#schema:idx|title|url|snippet" in out
+    assert r"1|Pipe \| Title|https://example.org/item?id=42|Snippet with \| pipe and clean URL." in out
+    assert "utm_source" not in out
+    assert "fbclid" not in out
+
+
+def test_tip6_catalog_dedup_omits_duplicate_trafilatura_body_when_5_or_more_items(monkeypatch):
+    """Tip 6: When >= 5 structured items are extracted, omit duplicate trafilatura body below Extracted Items."""
+    items_json = ", ".join(
+        f'{{"@type": "ListItem", "position": {i}, "item": {{"@type": "Product", "name": "GPU Card Model {i}", '
+        f'"url": "/itm/{100 + i}?hash=item123&itmprp=enc456&id={i}", '
+        f'"offers": {{"@type": "Offer", "price": {200 + i}, "priceCurrency": "EUR"}}}}}}'
+        for i in range(1, 7)
+    )
+    catalog_html = f"""
+    <html>
+      <head>
+        <script type="application/ld+json">
+        {{"@context": "https://schema.org", "@type": "ItemList", "itemListElement": [{items_json}]}}
+        </script>
+      </head>
+      <body>
+        <article>
+          <h1>Duplicate Catalog Body Heading</h1>
+          <p>Duplicate SEO footer text repeating GPU Card Model 1 through 6.</p>
+        </article>
+      </body>
+    </html>
+    """
+
+    def fake_get(url, **kwargs):
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=catalog_html,
+            request=request,
+        )
+
+    monkeypatch.setattr("server._http_get", fake_get)
+
+    out = search_website("https://www.ebay.nl/sch/i.html")
+    assert "## Extracted Items (6)" in out
+    assert "#schema:title|price|url|details" in out
+    assert "GPU Card Model 1|EUR 201|https://www.ebay.nl/itm/101?id=1|" in out
+    assert "hash=" not in out
+    assert "itmprp=" not in out
+    assert "Duplicate SEO footer text" not in out
+
+
+def test_tip7_strip_ui_boilerplate_and_ascii_boxes():
+    """Tip 7: _clean_plain_text_body strips UI button lines and Unicode/ASCII box lines while preserving prose."""
+    from server import _clean_plain_text_body
+
+    raw = (
+        "# Section Title #\n"
+        "Copy\n"
+        "Copied!\n"
+        "Ask AI\n"
+        "┌────────────────────┐\n"
+        "│ Boxed diagram line │\n"
+        "└────────────────────┘\n"
+        "Normative paragraph that must remain intact.\n"
+        "Was this page helpful?\n"
+        "Edit this page\n"
+    )
+    cleaned = _clean_plain_text_body(raw, include_code=False)
+    assert "# Section Title" in cleaned
+    assert "# Section Title #" not in cleaned
+    assert "Normative paragraph that must remain intact." in cleaned
+    assert "Copy" not in cleaned
+    assert "Ask AI" not in cleaned
+    assert "Boxed diagram line" not in cleaned
+    assert "Was this page helpful?" not in cleaned
+

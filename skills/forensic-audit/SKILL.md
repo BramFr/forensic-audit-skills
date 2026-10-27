@@ -83,6 +83,9 @@ If the input contains or describes a failure (any error, log, failed test, rejec
 
 Assess consequence severity dynamically: whenever a wrong diagnosis or fix could cause physical injury, illness, animal harm, fire, structural or environmental damage, legal breach, major financial loss or irreversible harm, the fix is "stop and have a qualified professional (named from the governing standard or authority) perform or sign off the work"; give the hypotheses only as background.
 
+**7. Code-Subagent Isolation & Lossless Context Pack.**
+Whenever a repair or implementation step writes or modifies code in files (even a single line), delegate the code edit to a clean code-subagent (`invoke_subagent` / `Agent` tool) with a lossless **Subagent Context Pack** prepared via `compress_context` (`mcp/context-compressor`: scoped `.md` section / `MODULE.md`, Pipe-DSV `#schema:` for `N >= 2` flat rows, or `JSON_COMPACT` for nested/sparse data; never use lossy word-pruning, and never run parallel subagents editing the same file).
+
 ---
 
 ## Phase 1: Select exactly 10 audit points
