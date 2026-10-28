@@ -57,7 +57,7 @@ For the full procedures, see `skills/forensic-audit/SKILL.md`, `skills/forensic-
 
 **Isolate code edits from long audit/planning contexts.**
 
-- For every code write or modification (even 1 line), spawn a fresh code-subagent (`invoke_subagent` / `Agent` tool) with a lossless **Subagent Context Pack** prepared via `compress_context` (`mcp/context-compressor`).
+- Use `compress_context` (`mcp/context-compressor`) in three phases: (1) **Phase 1 Progressive Reading** (`section="--frontmatter"`, `section="--headings"`, or multi-section `section="Why,Scope"` on `.md` docs), (2) **Phase 2 Code/Config Audit** (`section="--signatures"` or `section="func1,func2"` on `.py`/`.ts`/`.js`, `section="key"` on `.json`/`.yaml`/`.toml`, and when auditing `>= 3` source files in depth, spawn a read-only `research` subagent with a compressed Context Pack returning `#schema:point|status|file_line|evidence`), and (3) **Phase 4/5 Code-Subagent Isolation**: for every code write or modification (even 1 line), spawn a fresh code-subagent (`invoke_subagent` / `Agent` tool) with a lossless **Subagent Context Pack** prepared via `compress_context` (`--signatures` + target functions + scoped `.md` section / `MODULE.md`).
 - Use deterministic structural compression only: Markdown section scoping (`section` / `MODULE.md`), Pipe-DSV (`#schema:`) for homogeneous flat lists with `N >= 2` rows, or `JSON_COMPACT` for nested/sparse records.
 - Never use lossy token/word pruning on code, paths, commands or schemas, and never run parallel subagents that edit the same file.
 

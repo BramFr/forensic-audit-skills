@@ -21,11 +21,12 @@ Deze skills laten een AI-agent controleren in plaats van instemmen. Ze gaan uit 
 | [feature/05](feature/05-universele-website-scraper-en-zoekfilter.md) | done | Universele 3-laags website-scraper, anti-bot sessierotatie en URL+zoekfilter in web-search | Voeg 3-laags extractie (JSON-LD, SSR hydration, DOM-cards), anti-bot sessierotatie en URL+zoekfilter toe aan server.py. | web-search, mcp, scraper, json-ld, hydration, anti-bot, filter-query, forensic-audit |
 | [feature/06](feature/06-lossless-context-compressor-en-code-subagent.md) | done | Lossless Context-Compressor MCP en verplichte Code-Subagent Isolatie | Voeg mcp/context-compressor (sectie/DSV/JSON) toe en start bij elke codewijziging een schone code-subagent + fix bugs/02-03. | mcp, context-compressor, subagent, token-efficiency, dsv, planner, forensic-audit, sync |
 | [feature/07](feature/07-lossless-token-savers-in-web-search.md) | done | Lossless Token-Savers in Web-Search (Puur Tekst, Geen Codeblokken, Pipe-DSV & Filter-Fix) | Zeven lossless token-besparingen in mcp/web-search/server.py (puur tekst zonder inline links/opmaak, codeblokken skippen, Pipe-DSV, filter-fix, URL-opschoning & catalogus-dedup). | mcp, web-search, token-efficiency, trafilatura, dsv, plain-text, scraper |
+| [feature/08](feature/08-uitbreiding-context-compressor-ast-multisectie-dsv-en-audit-subagents.md) | done | Uitbreiding Context-Compressor (AST Code-Extractie, Multi-Sectie, Tabel-DSV, JSON/YAML/TOML/CSV & Audit-Subagents) | Breid mcp/context-compressor uit met Python/JS/TS AST-extractie (--signatures & symbolen), multi-sectie/--frontmatter/--headings, Tabel->DSV, geneste JSON/YAML/TOML/CSV en Fase 1/2 skill-integratie. | mcp, context-compressor, ast, dsv, multi-section, subagent, token-efficiency, skills |
 <!-- INDEX:END -->
 
 ## Modules
 <!-- MODULES:START -->
 | Module | Summary | Keywords | Depends on |
 | --- | --- | --- | --- |
-| [mcp/context-compressor](../mcp/context-compressor/MODULE.md) | Lossless MCP context-compressor (Markdown-secties, RFC 8259 JSON-minificatie en Pipe-DSV vanaf N>=2) voor subagents. | mcp, context-compressor, lossless, section-scoping, dsv, json-minification, subagent |  |
+| [mcp/context-compressor](../mcp/context-compressor/MODULE.md) | Lossless MCP context-compressor (Markdown multi-sectie/frontmatter/headings/Tabel-DSV, Python/TS AST --signatures & symbolen, JSON/YAML/TOML/CSV) voor hoofdagent & subagents. | mcp, context-compressor, lossless, ast, signatures, section-scoping, dsv, json-minification, subagent |  |
 <!-- MODULES:END -->
