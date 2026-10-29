@@ -27,7 +27,7 @@ Behavioral guidelines for verification work. Merge with project-specific instruc
 
 ## 5. Compact, Honest Reporting
 - Conclusions only, one line per step, tables over prose.
-- Always state what could not be verified. Cite primary sources (when searching, check `./docs/index.md` for `## Search keywords` first and include 1–3 matching keywords per query — 1–2 leading vision/scale priority terms for architecture/UI/scale/performance queries or 1–2 technical domain terms for protocol/RFC/spec queries, never 0 keywords; if absent, search normally).
+- Always state what could not be verified. Cite primary sources (when searching, check `./docs/index.md` for `## Search keywords` first via `compress_context(file_path="docs/index.md", section="Search keywords")` and, when the question is in the project's domain, include 1–3 matching keywords per query — 1–2 leading vision/scale priority terms for architecture/UI/scale/performance queries or 1–2 technical domain terms for protocol/RFC/spec queries, never 0 keywords; if absent or for a standalone question outside the project's domain, search normally; pass `filter_query` when scraping long URLs/catalogs/PDFs).
 
 
 ## 6. Diagnose Before You Fix

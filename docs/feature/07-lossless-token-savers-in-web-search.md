@@ -7,7 +7,7 @@ summary: Zeven lossless token-besparingen in mcp/web-search/server.py (puur teks
 tags: [mcp, web-search, token-efficiency, trafilatura, dsv, plain-text, scraper]
 created: 2026-10-27
 updated: 2026-10-27
-related: [feature/05, feature/06, bugs/01, feature/04]
+related: [feature/05, feature/06, bugs/01, feature/04, feature/09]
 ---
 
 # Lossless Token-Savers in Web-Search (Puur Tekst, Geen Codeblokken, Pipe-DSV & Filter-Fix)

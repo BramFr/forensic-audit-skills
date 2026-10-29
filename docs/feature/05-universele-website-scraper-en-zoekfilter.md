@@ -7,7 +7,7 @@ summary: Voeg 3-laags extractie (JSON-LD, SSR hydration, DOM-cards), anti-bot se
 tags: [web-search, mcp, scraper, json-ld, hydration, anti-bot, filter-query, forensic-audit]
 created: 2026-10-26
 updated: 2026-10-26
-related: [bugs/01, feature/04, feature/06]
+related: [bugs/01, feature/04, feature/06, feature/07, feature/09]
 ---
 
 # Universele 3-laags website-scraper, anti-bot sessierotatie en URL+zoekfilter in web-search

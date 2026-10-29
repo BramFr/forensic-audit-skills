@@ -7,7 +7,7 @@ summary: Dwing ## Search keywords (incl. visie/schaal prio-termen) af in search_
 tags: [planner, forensic-audit, search-keywords, web-search, mcp, tool-schema, sync, bugfix]
 created: 2026-10-25
 updated: 2026-10-27
-related: [feature/04, feature/05, bugs/02, feature/06]
+related: [feature/04, feature/05, bugs/02, feature/06, feature/09]
 ---
 
 # Search keywords worden overgeslagen na lange context of door ontbrekende tool-schema instructie

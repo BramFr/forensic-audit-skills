@@ -670,3 +670,116 @@ def test_tip7_strip_ui_boilerplate_and_ascii_boxes():
     assert "Boxed diagram line" not in cleaned
     assert "Was this page helpful?" not in cleaned
 
+
+def test_dom_cards_kleinanzeigen_strips_script_and_extracts_price_and_skips_mailto():
+    """Feature 09: _extract_dom_cards strips nested <script>/<style> JSON-LD noise, skips mailto: links, extracts suffix prices ('950 € VB'), and skips wanted ('Gezocht') EUR 0.00 ads."""
+    from lxml import html as lxml_html
+    from server import _extract_dom_cards
+
+    html_sample = """
+    <html><body>
+      <article class="aditem">
+        <a href="mailto:?subject=Share"><svg>share-icon</svg></a>
+        <script type="application/ld+json">{"@context":"https://schema.org","@type":"ImageObject","creditText":"Kleinanzeigen","contentUrl":"https://img.kleinanzeigen.de/1.jpg"}</script>
+        <h2 class="text-module-begin"><a href="/s-anzeige/ps5-pro-30th-anniversary/111">PlayStation 5 Pro 30th Anniversary Limited Edition</a></h2>
+        <p class="aditem-main--middle--price-shipping--price">950 € VB</p>
+        <p>47533 Kleve - Neu &amp; OVP versiegelt</p>
+      </article>
+      <article class="aditem">
+        <script type="application/ld+json">{"creditText":"Kleinanzeigen"}</script>
+        <h2><a href="/s-anzeige/ps5-pro-2tb/222">Sony PS5 Pro 2TB Konsole</a></h2>
+        <div class="price-block">1.299,99 €</div>
+        <p>46446 Emmerich am Rhein</p>
+      </article>
+      <article class="aditem">
+        <h2><a href="/s-anzeige/gezocht-ps5/333">GEZOCHT: Wij kopen jouw PS5 voor cash</a></h2>
+        <p>Direct geld</p>
+      </article>
+    </body></html>
+    """
+    tree = lxml_html.fromstring(html_sample)
+    cards = _extract_dom_cards(tree, "https://www.kleinanzeigen.de")
+    assert len(cards) == 2
+    assert (
+        cards[0]
+        == "PlayStation 5 Pro 30th Anniversary Limited Edition|950 € VB|https://www.kleinanzeigen.de/s-anzeige/ps5-pro-30th-anniversary/111|950 € VB 47533 Kleve - Neu & OVP versiegelt"
+    )
+    assert "creditText" not in cards[0]
+    assert "mailto:" not in cards[0]
+    assert (
+        cards[1]
+        == "Sony PS5 Pro 2TB Konsole|1.299,99 €|https://www.kleinanzeigen.de/s-anzeige/ps5-pro-2tb/222|1.299,99 € 46446 Emmerich am Rhein"
+    )
+
+
+def test_clean_plain_text_body_strips_financing_footnotes_and_dedups_consecutive_lines():
+    """Feature 09: _clean_plain_text_body strips MediaMarkt-style financing footnotes while keeping normal markdown bullets and deduplicating consecutive identical UI lines."""
+    from server import _clean_plain_text_body
+
+    raw = (
+        "# PlayStation 5 Pro 2TB\n"
+        "* Regular product bullet point: 2TB SSD storage included\n"
+        "* Second normal bullet point: DualSense wireless controller\n"
+        "Diese Variante ist in dieser Kombination nicht verfügbar.\n"
+        "Diese Variante ist in dieser Kombination nicht verfügbar.\n\n"
+        "Diese Variante ist in dieser Kombination nicht verfügbar.\n"
+        "* 0% effektiver Jahreszins, ab € 100.- Finanzierungssumme, Ratenfinanzierung über Finanzierungspartner.\n"
+        "** Ratenfinanzierung wählbar ab € 100.- (Sollzinssatz 10,37%, vorbehaltlich Kreditwürdigkeitsprüfung).\n"
+        "¹ Bei Kauf erhältst du einen 10 € Einkaufscoupon (Mindesteinkaufswert 50 €).\n"
+        "⁴⁸ Gesetzliche Rechte (Widerrufsrecht) bleiben unberührt.\n"
+        "Final informative paragraph about local pickup in Kleve.\n"
+    )
+    cleaned = _clean_plain_text_body(raw, include_code=False)
+    assert "* Regular product bullet point: 2TB SSD storage included" in cleaned
+    assert "* Second normal bullet point: DualSense wireless controller" in cleaned
+    assert (
+        cleaned.count(
+            "Diese Variante ist in dieser Kombination nicht verfügbar."
+        )
+        == 1
+    )
+    assert "Ratenfinanzierung" not in cleaned
+    assert "Sollzinssatz" not in cleaned
+    assert "Einkaufscoupon" not in cleaned
+    assert "Widerrufsrecht" not in cleaned
+    assert "Final informative paragraph about local pickup in Kleve." in cleaned
+
+
+def test_html_to_markdown_article_body_preserved_when_unpriced_article_cards_present():
+    """Feature 09: Blog articles with >= 5 unpriced <article> related-post cards in the footer preserve the full article body and do not discard it via skip_duplicate_body."""
+    from server import _html_to_markdown
+
+    related_cards = "\n".join(
+        f'<article><h3><a href="/blog/post-{i}">Related PlayStation Blog Story Number {i}</a></h3><p>Read more about game {i} on our blog.</p></article>'
+        for i in range(1, 8)
+    )
+    article_prose = (
+        "Welcome to the official PlayStation 30th Anniversary celebration announcement. "
+        "The PlayStation 5 Pro Limited Edition bundle includes a 2TB SSD, Wi-Fi 7 support, "
+        "a DualSense Edge wireless controller, a DualSense charging station, and a vertical stand. "
+        "Pre-orders open on September 26 via direct.playstation.com and participating retailers, "
+        "with official release scheduled for November 21, 2024 across Europe and North America. "
+        "This collector bundle is strictly limited to 12,300 individually numbered units worldwide."
+    )
+    blog_html = f"""
+    <html>
+      <body>
+        <main>
+          <h1>PlayStation 30th Anniversary Collection Detailed</h1>
+          <p>{article_prose}</p>
+        </main>
+        <footer>
+          {related_cards}
+        </footer>
+      </body>
+    </html>
+    """
+    md = _html_to_markdown(
+        blog_html, "https://blog.playstation.com/2024/09/19/30th-anniversary/"
+    )
+    assert md is not None
+    assert "12,300 individually numbered units worldwide" in md
+    assert "DualSense Edge wireless controller" in md
+    assert "## Extracted Items" not in md
+
+

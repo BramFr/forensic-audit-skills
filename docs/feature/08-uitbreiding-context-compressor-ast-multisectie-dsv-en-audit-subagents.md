@@ -7,7 +7,7 @@ summary: Breid mcp/context-compressor uit met Python/JS/TS AST-extractie (--sign
 tags: [mcp, context-compressor, ast, dsv, multi-section, subagent, token-efficiency, skills]
 created: 2026-10-28
 updated: 2026-10-28
-related: [feature/05, feature/06, feature/07, bugs/04]
+related: [feature/05, feature/06, feature/07, bugs/04, feature/09]
 ---
 
 # Uitbreiding Context-Compressor (AST Code-Extractie, Multi-Sectie, Tabel-DSV, JSON/YAML/TOML/CSV & Audit-Subagents)

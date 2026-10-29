@@ -78,6 +78,21 @@ _BOILERPLATE_LINE_RE = re.compile(
     r"Was this page helpful\?|Skip to main content)$",
     re.IGNORECASE,
 )
+_FINANCING_FOOTNOTE_RE = re.compile(
+    r"^\s*(?:\*{1,4}|[⁰¹²³⁴⁵⁶⁷⁸⁹ᵂ]+)\s*.*"
+    r"(?:Ratenfinanzierung|Sollzinssatz|Jahreszins|Finanzierungspartner|"
+    r"Einkaufscoupon|Widerrufsrecht|Widerrufs-\s*bzw\.\s*Umtauschrecht|"
+    r"Mindesteinkaufswert|vorbehaltlich Kreditwürdigkeitsprüfung|"
+    r"Gesetzliche Rechte \(Widerrufsrecht|Apple Music)",
+    re.IGNORECASE,
+)
+_DOM_PRICE_RE = re.compile(
+    r"(?:(?:EUR|USD|GBP|€|\$)\s*\d[\d.,]*(?:\s*VB)?|\d[\d.,]*\s*(?:€|EUR\b)(?:\s*VB)?)",
+    re.IGNORECASE,
+)
+_KLEINANZEIGEN_LD_NOISE_RE = re.compile(
+    r'\{[^{}]*"creditText"\s*:\s*"Kleinanzeigen"[^{}]*\}'
+)
 _BOX_BORDER_CHARS = frozenset("┌┐└┘├┤┬┴┼─│═║╔╗╚╝╠╣╦╩╬ ")
 _ASCII_BOX_LINE_RE = re.compile(r"^\+[-=+]{3,}\+$")
 _TRACKING_PARAMS_EXACT = frozenset(
@@ -134,20 +149,24 @@ class SearchWebsiteInput(BaseModel):
         description=(
             "Search query, http(s) URL, or 'https://... <filter_keywords>' to scrape and filter a URL. "
             "MANDATORY FOR SEARCH QUERIES: before searching, check whether ./docs/index.md exists with "
-            "a '## Search keywords' section. If present, you MUST include 1 to 3 fitting terms from "
-            "'## Search keywords' in query_or_url (for architecture, UI, canvas, scale or performance "
-            "queries, pick 1-2 leading vision/scale priority terms from the start of the list; for "
-            "protocol, RFC or standard specs, pick 1-2 matching technical domain terms from the list; "
-            "strip search-operator punctuation like '+' from keywords). Never send 0 keywords when "
-            "'## Search keywords' is present."
+            "a '## Search keywords' section (using compress_context(file_path='docs/index.md', section='Search keywords') "
+            "when available). If present AND the user's request is about the project or its domain, you MUST "
+            "include 1 to 3 fitting terms from '## Search keywords' in query_or_url (for architecture, UI, "
+            "canvas, scale or performance queries, pick 1-2 leading vision/scale priority terms from the start "
+            "of the list; for protocol, RFC or standard specs, pick 1-2 matching technical domain terms from "
+            "the list; strip search-operator punctuation like '+' from keywords). Never send 0 keywords when "
+            "'## Search keywords' is present. If the request is a standalone question outside the project's "
+            "domain (e.g., an unrelated consumer or personal question while the project folder is open), "
+            "do NOT inject project keywords into the search query."
         )
     )
     filter_query: str | None = Field(
         default=None,
         description=(
-            "Optional keyword filter when query_or_url is an http(s) URL (or pass 'https://... <keywords>' "
-            "inline in query_or_url). Filters extracted products, listings and text sections on the page "
-            "by matching terms from the user's question, and falls back to a 'site:<domain> <filter_query>' "
+            "Recommended keyword filter when query_or_url is an http(s) URL (or pass 'https://... <keywords>' "
+            "inline in query_or_url). Pass filter_query by default on long pages, product catalogs, legal texts "
+            "or PDFs to keep outputs under 10 KB. Filters extracted products, listings and text sections on the "
+            "page by matching terms from the user's question, and falls back to a 'site:<domain> <filter_query>' "
             "search if 0 items match on the page."
         ),
     )
@@ -529,7 +548,7 @@ def _search_ddgs_fallback(
 
 
 def _extract_json_ld_items(
-    tree: Any, base_url: str, max_items: int = 60
+    tree: Any, base_url: str, max_items: int = 20
 ) -> list[str]:
     """Layer A: Extract Schema.org Product, Offer and ItemList entries from JSON-LD scripts."""
     items_dsv: list[str] = []
@@ -642,7 +661,7 @@ def _extract_json_ld_items(
 
 
 def _extract_hydration_items(
-    tree: Any, base_url: str, max_items: int = 60
+    tree: Any, base_url: str, max_items: int = 20
 ) -> list[str]:
     """Layer B: Extract listing/product items from Next.js __NEXT_DATA__ or SSR state JSON."""
     items_dsv: list[str] = []
@@ -667,6 +686,13 @@ def _extract_hydration_items(
                 price_val = str(ptype)
         elif isinstance(pi, (int, float, str)) and str(pi).strip():
             price_val = str(pi).strip()
+
+        title_lower = title.lower()
+        if price_val in ("", "0", "0.00", "EUR 0.00", "EUR 0") and any(
+            kw in title_lower
+            for kw in ("gezocht", "wij kopen", "hoogste inkoop")
+        ):
+            return None
 
         raw_url = (
             d.get("vipUrl")
@@ -744,7 +770,7 @@ def _extract_hydration_items(
 
 
 def _extract_dom_cards(
-    tree: Any, base_url: str, max_items: int = 60
+    tree: Any, base_url: str, max_items: int = 20
 ) -> list[str]:
     """Layer C: Extract repeating product/result cards from generic semantic DOM structures."""
     items_dsv: list[str] = []
@@ -764,6 +790,13 @@ def _extract_dom_cards(
     for card in cards:
         if len(items_dsv) >= max_items:
             break
+        for bad_el in card.xpath(
+            ".//script | .//style | .//svg | .//noscript"
+        ):
+            parent = bad_el.getparent()
+            if parent is not None:
+                parent.remove(bad_el)
+
         title_nodes = card.xpath(
             ".//*[contains(@class, 's-card__title') or contains(@class, 's-item__title') "
             "or contains(@class, 'title') or self::h2 or self::h3 or self::h4]"
@@ -788,30 +821,51 @@ def _extract_dom_cards(
         href = ""
         for a in card.xpath(".//a[@href]"):
             h = (a.get("href") or "").strip()
-            if h and not h.startswith(("#", "javascript:")):
+            if h and not h.lower().startswith(
+                ("#", "javascript:", "mailto:", "tel:")
+            ):
                 href = _clean_tracking_url(urljoin(base_url, h))
                 break
         if "itm/123456" in href:
             continue
 
+        price_str = ""
+        for pnode in card.xpath(
+            ".//*[contains(@class, 'price') or contains(@id, 'price')]"
+        ):
+            p_text = " ".join(pnode.text_content().split())
+            pm = _DOM_PRICE_RE.search(p_text)
+            if pm:
+                price_str = pm.group(0).strip()
+                break
+
+        raw_card_text = _KLEINANZEIGEN_LD_NOISE_RE.sub(
+            " ", card.text_content()
+        )
         full_text = _UI_NOISE_RE.sub(
-            " ", " ".join(card.text_content().split())
+            " ", " ".join(raw_card_text.split())
         ).strip()
         details = full_text.replace(title, "", 1).strip(" -|·,")
         if not details and not href:
             continue
+        if not price_str:
+            price_match = _DOM_PRICE_RE.search(details)
+            price_str = price_match.group(0).strip() if price_match else ""
+
         if len(details) > 220:
             details = details[:217] + "..."
 
         norm_title = title.lower()
+        if price_str in ("", "0", "0 €", "EUR 0.00", "EUR 0") and (
+            norm_title.startswith(("gezocht", "suche "))
+            or "wij kopen" in norm_title
+            or "hoogste inkoop" in norm_title
+        ):
+            continue
         if norm_title in seen_titles:
             continue
         seen_titles.add(norm_title)
 
-        price_match = re.search(
-            r"(?:EUR|USD|GBP|€|\$)\s*\d+(?:[.,]\d{1,2})?", details
-        )
-        price_str = price_match.group(0).strip() if price_match else ""
         items_dsv.append(
             f"{_escape_dsv_field(title)}|"
             f"{_escape_dsv_field(price_str)}|"
@@ -901,6 +955,7 @@ def _clean_plain_text_body(text: str, include_code: bool = False) -> str:
 
     out_lines: list[str] = []
     in_fenced_code = False
+    last_non_empty_stripped = ""
     for raw_line in working.splitlines():
         if "itm/123456" in raw_line:
             continue
@@ -912,6 +967,8 @@ def _clean_plain_text_body(text: str, include_code: bool = False) -> str:
             continue
         if in_fenced_code:
             out_lines.append(raw_line.rstrip())
+            continue
+        if _FINANCING_FOOTNOTE_RE.match(stripped_raw):
             continue
 
         line = _UI_NOISE_RE.sub("", raw_line)
@@ -928,8 +985,14 @@ def _clean_plain_text_body(text: str, include_code: bool = False) -> str:
         s = line.strip()
         if _BOILERPLATE_LINE_RE.match(s):
             continue
+        if _FINANCING_FOOTNOTE_RE.match(s):
+            continue
         if _is_box_drawing_line(s):
             continue
+        if s:
+            if s == last_non_empty_stripped:
+                continue
+            last_non_empty_stripped = s
         out_lines.append(line.rstrip())
 
     cleaned = "\n".join(out_lines)
@@ -1014,6 +1077,7 @@ def _html_to_markdown(
     )
 
     structured_items: list[str] = []
+    from_fallback_dom = False
     try:
         tree = lxml_html.fromstring(html_text)
         ld_items = _extract_json_ld_items(tree, url)
@@ -1027,7 +1091,20 @@ def _html_to_markdown(
             structured_items = ld_items
         else:
             structured_items = dom_items
+            from_fallback_dom = True
     except Exception:
+        structured_items = []
+
+    priced_count = sum(
+        1
+        for item in structured_items
+        if len(item.split("|")) >= 2 and bool(item.split("|")[1].strip())
+    )
+    if (
+        from_fallback_dom
+        and priced_count == 0
+        and len(cleaned_body) >= 400
+    ):
         structured_items = []
 
     sections: list[str] = []
@@ -1044,7 +1121,7 @@ def _html_to_markdown(
             sections.append(headlines)
 
     skip_duplicate_body = False
-    if len(structured_items) >= 5:
+    if len(structured_items) >= 5 and priced_count >= 2:
         if not filter_query:
             skip_duplicate_body = True
         else:
@@ -1316,12 +1393,15 @@ def search_website(
             description=(
                 "Search query, http(s) URL, or 'https://... <filter_keywords>' to scrape and filter a URL. "
                 "MANDATORY FOR SEARCH QUERIES: before searching, check whether ./docs/index.md exists with "
-                "a '## Search keywords' section. If present, you MUST include 1 to 3 fitting terms from "
-                "'## Search keywords' in query_or_url (for architecture, UI, canvas, scale or performance "
-                "queries, pick 1-2 leading vision/scale priority terms from the start of the list; for "
-                "protocol, RFC or standard specs, pick 1-2 matching technical domain terms from the list; "
-                "strip search-operator punctuation like '+' from keywords). Never send 0 keywords when "
-                "'## Search keywords' is present."
+                "a '## Search keywords' section (using compress_context(file_path='docs/index.md', section='Search keywords') "
+                "when available). If present AND the user's request is about the project or its domain, you MUST "
+                "include 1 to 3 fitting terms from '## Search keywords' in query_or_url (for architecture, UI, "
+                "canvas, scale or performance queries, pick 1-2 leading vision/scale priority terms from the start "
+                "of the list; for protocol, RFC or standard specs, pick 1-2 matching technical domain terms from "
+                "the list; strip search-operator punctuation like '+' from keywords). Never send 0 keywords when "
+                "'## Search keywords' is present. If the request is a standalone question outside the project's "
+                "domain (e.g., an unrelated consumer or personal question while the project folder is open), "
+                "do NOT inject project keywords into the search query."
             )
         ),
     ],
@@ -1330,9 +1410,10 @@ def search_website(
         Field(
             default=None,
             description=(
-                "Optional keyword filter when query_or_url is an http(s) URL (or pass 'https://... <keywords>' "
-                "inline in query_or_url). Filters extracted products, listings and text sections on the page "
-                "by matching terms from the user's question, and falls back to a 'site:<domain> <filter_query>' "
+                "Recommended keyword filter when query_or_url is an http(s) URL (or pass 'https://... <keywords>' "
+                "inline in query_or_url). Pass filter_query by default on long pages, product catalogs, legal texts "
+                "or PDFs to keep outputs under 10 KB. Filters extracted products, listings and text sections on the "
+                "page by matching terms from the user's question, and falls back to a 'site:<domain> <filter_query>' "
                 "search if 0 items match on the page."
             ),
         ),
@@ -1349,7 +1430,7 @@ def search_website(
         ),
     ] = False,
 ) -> str:
-    """Search DuckDuckGo for a query, or fetch a webpage/PDF/catalog as Markdown for an http(s) URL (with optional filter_query or inline 'https://... <keywords>' and include_code=False by default). MANDATORY BEFORE SEARCHING: check whether ./docs/index.md exists with '## Search keywords'. If present, always include 1 to 3 fitting keywords from '## Search keywords' in every search query (1-2 leading vision/scale priority terms for architecture/UI/scale/performance queries, or 1-2 technical domain terms for protocol/RFC/standard queries; never 0 keywords)."""
+    """Search DuckDuckGo for a query, or fetch a webpage/PDF/catalog as Markdown for an http(s) URL (pass filter_query or inline 'https://... <keywords>' by default on long pages, catalogs or PDFs to avoid >10 KB outputs; include_code=False by default). MANDATORY BEFORE SEARCHING: check whether ./docs/index.md exists with '## Search keywords' (via compress_context(file_path='docs/index.md', section='Search keywords') when available). If present and the question relates to the project or its domain, always include 1 to 3 fitting keywords from '## Search keywords' in every search query (1-2 leading vision/scale priority terms for architecture/UI/scale/performance queries, or 1-2 technical domain terms for protocol/RFC/standard queries; never 0 keywords). For standalone questions outside the project's domain, search normally without project keywords."""
     validated = SearchWebsiteInput(
         query_or_url=query_or_url,
         filter_query=filter_query,
