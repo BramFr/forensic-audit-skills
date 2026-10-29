@@ -7,7 +7,7 @@ summary: Voeg mcp/context-compressor (sectie/DSV/JSON) toe en start bij elke cod
 tags: [mcp, context-compressor, subagent, token-efficiency, dsv, planner, forensic-audit, sync]
 created: 2026-10-27
 updated: 2026-10-27
-related: [bugs/01, bugs/02, bugs/03, feature/04, feature/05]
+related: [bugs/01, bugs/02, bugs/03, feature/04, feature/05, feature/10]
 ---
 
 # Lossless Context-Compressor MCP en verplichte Code-Subagent Isolatie

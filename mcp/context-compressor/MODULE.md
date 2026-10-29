@@ -10,7 +10,7 @@ status: done
 Levert een 100% lossless, deterministische FastMCP-server (`compress_context`) waarmee zowel de hoofdagent (tijdens Fase 1 Progressive Reading en Fase 2 Audits) als schone read-only en code-subagents alléén de relevante Markdown-secties (`--frontmatter`, `--headings`, `A,B,C`), Python/JS/TS AST-signaturen (`--signatures`) of specifieke functies/klassen (`func1,ClassA`), Pipe-DSV tabellen (`#schema:col1|col2...`) of geminificeerde JSON/YAML/TOML/CSV inladen zonder context rot.
 
 ## Boundaries
-- **Does**: Leest `.md`, `.txt`, `.json`, `.py`, `.ts`, `.tsx`, `.js`, `.jsx`, `.yaml`, `.yml`, `.toml`, `.csv` en `.tsv` bestanden binnen de project-workspace; extraheert optioneel één of meer komma-gescheiden secties, symbolen of JSON-sleutels (`section`), `--frontmatter`, `--headings` of `--signatures`; zet Markdown-tabellen ($\ge 2$ datarijen), `.csv`/`.tsv` en vlakke JSON-lijsten (top-level én genest binnen een dict) om naar `#schema:col1|col2...` Pipe-DSV met `\|`-escaping wanneer `dsv_for_flat_lists=True`; en extraheert Python/JS/TS functie- en klassesignaturen of volledige AST-symbolen met `# L<start>-L<end>` regelnummers.
+- **Does**: Leest `.md`, `.txt`, `.json`, `.py`, `.ts`, `.tsx`, `.js`, `.jsx`, `.yaml`, `.yml`, `.toml`, `.csv` en `.tsv` bestanden binnen de project-workspace; extraheert optioneel één of meer komma-gescheiden secties, symbolen of JSON-sleutels (`section`), `--frontmatter`, `--headings` of `--signatures`; zet Markdown-tabellen ($\ge 2$ datarijen), `.csv`/`.tsv` en vlakke JSON-lijsten (top-level én genest binnen een dict) om naar `#schema:col1|col2...` Pipe-DSV met `\|`-escaping wanneer `dsv_for_flat_lists=True`; en extraheert Python/JS/TS functie- en klassesignaturen of volledige AST-symbolen met `# L<start>-L<end>` regelnummers. Buiten frontmatter en code-fences wordt een Markdown-link `[X](Y)` exact omkeerbaar ingekort tot `Y` alleen wanneer `Y` een relatief `.md`-pad met `/` zonder spaties is en `X == ident(Y)` (`head/` + `tail` tot de eerste `-` of `.`, bv. `[bugs/01](bugs/01-x.md)` → `bugs/01-x.md`). In volledige modus (geen `section`) is de uitvoer nooit langer dan het ruwe bestand; anders wordt de ruwe tekst teruggegeven.
 - **Does NOT do**: Doet **geen** lossy statistische woord-pruning (`IDF_DICT` / `prune_text`), zet tekst of identifiers nooit om naar kleine letters (`text.lower()`), vertaalt nooit naar Hanzi, doet geen netwerk-/HTTP-calls of web-scraping (dat leeft in `mcp/web-search`), en leest nooit bestanden buiten `workspace_root`.
 - **May depend on**: Python stdlib (`ast`, `csv`, `io`, `json`, `re`, `pathlib`, `typing`), `fastmcp`, `pydantic`. **Must not depend on**: `mcp/web-search`, `curl_cffi`, `ddgs`, `playwright`, `trafilatura`.
 
@@ -23,7 +23,7 @@ class CompressContextInput(BaseModel):
     dsv_for_flat_lists: bool = True
     workspace_root: str | None = None
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def compress_context(
     file_path: str,
     section: str | None = None,

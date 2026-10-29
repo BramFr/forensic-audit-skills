@@ -7,7 +7,7 @@ summary: Breid mcp/context-compressor uit met Python/JS/TS AST-extractie (--sign
 tags: [mcp, context-compressor, ast, dsv, multi-section, subagent, token-efficiency, skills]
 created: 2026-10-28
 updated: 2026-10-28
-related: [feature/05, feature/06, feature/07, bugs/04, feature/09]
+related: [feature/05, feature/06, feature/07, bugs/04, feature/09, feature/10]
 ---
 
 # Uitbreiding Context-Compressor (AST Code-Extractie, Multi-Sectie, Tabel-DSV, JSON/YAML/TOML/CSV & Audit-Subagents)
@@ -82,7 +82,7 @@ Dependency direction (arrow = may import): `mcp/context-compressor/tests` -> `mc
 
 ## Acceptance criteria
 - [x] `mcp/context-compressor/server.py` ondersteunt alle 5 de lossless uitbreidingen (AST `--signatures` & symbool-extractie op `.py`/`.ts`/`.js`, `--frontmatter`/`--headings`/multi-sectie op `.md`, Markdown-tabel -> `#schema:` Pipe-DSV bij `dsv_for_flat_lists=True`, geneste JSON-sleutels/lijsten + `.csv`/`.tsv`/`.yaml`/`.toml`), en alle unit- en opposite-tests slagen.
-  Check: `uv run --directory mcp/context-compressor pytest tests/test_server.py -q` -> `11 passed`
+  Check: `uv run --directory mcp/context-compressor pytest tests/test_server.py -q` -> `15 passed` (was 11; +4 tests in feature/10)
 - [x] `mcp/context-compressor/server.py` respecteert de module-grenzen uit `MODULE.md` (0 verboden imports of lossy `prune_text`).
   Check: `(Select-String "mcp/context-compressor/server.py" -Pattern "curl_cffi|ddgs|playwright|trafilatura|prune_text" | Measure-Object).Count` -> `0`
 - [x] Alle 4 de skills (`skills/*/SKILL.md`), `GEMINI.md`, `CLAUDE.md` en `.cursor/rules/forensic-audit.mdc` beschrijven het gebruik van `compress_context` voor Fase 1 (`--frontmatter`/`--headings`/multi-sectie), Fase 2 (`--signatures` & read-only audit-subagents) en Fase 4/5 (code-subagents).

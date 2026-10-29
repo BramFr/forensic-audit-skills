@@ -1385,7 +1385,7 @@ def _search_duckduckgo(query: str) -> str:
     return "\n".join(lines).strip()
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 def search_website(
     query_or_url: Annotated[
         str,

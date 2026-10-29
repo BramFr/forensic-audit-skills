@@ -7,7 +7,7 @@ summary: Bespaar 68% tot 94% op search_website tool-tokens via DOM-card <script>
 tags: [mcp, web-search, token-efficiency, scraper, dom-cards, filter-query, search-keywords, subagent]
 created: 2026-10-28
 updated: 2026-10-28
-related: [feature/05, feature/07, feature/08, bugs/01, bugs/04]
+related: [feature/05, feature/07, feature/08, bugs/01, bugs/04, feature/10]
 ---
 
 # Token-Besparing op Web-Search Tool Calls (DOM-Card Script-Strip, Voetnoten, Artikel-Body & Zoekscope)

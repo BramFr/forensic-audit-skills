@@ -444,9 +444,19 @@ def test_ext4_nested_json_csv_tsv_yaml_toml(tmp_path: Path):
 
     csv_file = tmp_path / "items.csv"
     csv_file.write_text("id,name,score\n1,Alpha,95\n2,Beta,88\n", encoding="utf-8")
+    # L4: unquoted CSV DSV would be longer than raw, so the raw text is returned verbatim.
     assert (
         compress_context(file_path="items.csv", workspace_root=str(tmp_path))
-        == "#schema:id|name|score\n1|Alpha|95\n2|Beta|88"
+        == "id,name,score\n1,Alpha,95\n2,Beta,88\n"
+    )
+
+    quoted_csv = tmp_path / "quoted.csv"
+    quoted_csv.write_text(
+        '"id","name","score"\n"1","Alpha Beta","95"\n"2","Gamma","88"\n', encoding="utf-8"
+    )
+    assert (
+        compress_context(file_path="quoted.csv", workspace_root=str(tmp_path))
+        == "#schema:id|name|score\n1|Alpha Beta|95\n2|Gamma|88"
     )
 
     toml_file = tmp_path / "pyproject.toml"
@@ -471,3 +481,99 @@ addopts = "-q"
     assert out_toml == '[project]\nname = "demo"\n\nversion = "0.1.0"'
     assert "# Full line comment" not in out_toml
 
+
+
+# --- feature/10: structured output, reversible link compaction (L3), never-larger guard (L4) ---
+
+import asyncio  # noqa: E402
+import re  # noqa: E402
+
+import fastmcp  # noqa: E402
+
+from server import _link_ident, mcp  # noqa: E402
+
+_REVERSE_RE = re.compile(r"(?<![\[(\w/.-])[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)+\.md(?![\])\w])")
+
+
+def _reverse_links(text: str) -> str:
+    """Benchmark reverse step: bare doc path P -> [ident(P)](P)."""
+    return _REVERSE_RE.sub(lambda m: f"[{_link_ident(m.group(0))}]({m.group(0)})", text)
+
+
+def test_l1_tool_call_has_no_structured_content(tmp_path: Path):
+    """L1: tool result is text-only (no duplicated structuredContent) and equals direct output."""
+    md = tmp_path / "doc.md"
+    md.write_text("# Title\n\n\nSome text.\n", encoding="utf-8")
+    args = {"file_path": "doc.md", "workspace_root": str(tmp_path)}
+
+    async def _call():
+        async with fastmcp.Client(mcp) as client:
+            return await client.call_tool("compress_context", args)
+
+    result = asyncio.run(_call())
+    assert result.structured_content is None
+    assert result.content[0].text == compress_context(**args)
+
+
+def test_l3_index_table_link_compacted_and_reversible(tmp_path: Path):
+    """L3: '[bugs/01](bugs/01-x.md)' becomes 'bugs/01-x.md' and the reverse rebuilds the row."""
+    row = "| [bugs/01](bugs/01-x.md) | Fix search keywords | done |"
+    md = tmp_path / "index.md"
+    md.write_text(row + "\n", encoding="utf-8")
+    out = compress_context(file_path="index.md", workspace_root=str(tmp_path))
+    assert "bugs/01-x.md" in out
+    assert "[bugs/01]" not in out
+    assert _reverse_links("bugs/01-x.md") == "[bugs/01](bugs/01-x.md)"
+    assert _reverse_links(out) == out.replace("bugs/01-x.md", "[bugs/01](bugs/01-x.md)")
+
+    line = "See [feature/10](feature/10-x.md) for details."
+    (tmp_path / "p.md").write_text(line + "\n", encoding="utf-8")
+    out2 = compress_context(file_path="p.md", workspace_root=str(tmp_path))
+    assert out2 == "See feature/10-x.md for details."
+    assert _reverse_links(out2) == line
+
+
+def test_l3_opposite_links_left_unchanged(tmp_path: Path):
+    """L3 opposite: non-ident labels, http links, frontmatter and fenced code stay verbatim."""
+    keep_lines = [
+        "Module: [mcp/context-compressor](../mcp/context-compressor/MODULE.md)",
+        "Index: [docs](docs/index.md)",
+        "Web: [bugs/01](https://example.com/bugs/01-x.md)",
+    ]
+    text = (
+        "---\n"
+        "link: [bugs/01](bugs/01-x.md)\n"
+        "---\n"
+        + "\n".join(keep_lines)
+        + "\n\n```\n[bugs/01](bugs/01-x.md)\n```\n"
+    )
+    (tmp_path / "o.md").write_text(text, encoding="utf-8")
+    out = compress_context(file_path="o.md", workspace_root=str(tmp_path))
+    for kl in keep_lines:
+        assert kl in out
+    assert "link: [bugs/01](bugs/01-x.md)" in out
+    assert "```\n[bugs/01](bugs/01-x.md)\n```" in out
+
+
+def test_l4_full_mode_never_larger_than_raw_for_repo_files():
+    """L4: full-file output is never longer than the raw file for every supported repo file."""
+    repo_root = Path(__file__).resolve().parents[3]
+    exts = {".md", ".txt", ".json", ".py", ".ts", ".tsx", ".js", ".jsx",
+            ".yaml", ".yml", ".toml", ".csv", ".tsv"}
+    skip = {".venv", ".git", "__pycache__", ".pytest_cache", "node_modules"}
+    checked = 0
+    for p in repo_root.rglob("*"):
+        if not p.is_file() or p.suffix.lower() not in exts:
+            continue
+        if any(part in skip for part in p.relative_to(repo_root).parts):
+            continue
+        try:
+            raw = p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        out = compress_context(file_path=str(p), workspace_root=str(repo_root))
+        if out.startswith("ERROR:"):
+            continue
+        assert len(out) <= len(raw), f"{p} grew: {len(out)} > {len(raw)}"
+        checked += 1
+    assert checked > 0

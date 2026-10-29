@@ -783,3 +783,35 @@ def test_html_to_markdown_article_body_preserved_when_unpriced_article_cards_pre
     assert "## Extracted Items" not in md
 
 
+
+
+def test_l1_tool_call_has_no_structured_content(monkeypatch):
+    """L1: search_website tool result is text-only (no duplicated structuredContent)."""
+    import asyncio
+
+    import fastmcp
+
+    from server import mcp
+
+    ddg_html = """
+    <html><body>
+      <div class="result__body">
+        <a class="result__a" href="https://gofastmcp.com/docs">FastMCP Documentation</a>
+        <a class="result__snippet">The fast, Pythonic way to build MCP servers.</a>
+      </div>
+    </body></html>
+    """
+
+    def fake_post(url, data, **kwargs):
+        return httpx.Response(200, text=ddg_html, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr("server._http_post", fake_post)
+
+    async def _call():
+        async with fastmcp.Client(mcp) as client:
+            return await client.call_tool("search_website", {"query_or_url": "fastmcp docs"})
+
+    result = asyncio.run(_call())
+    assert result.structured_content is None
+    assert result.content[0].text == search_website("fastmcp docs")
+    assert "FastMCP Documentation" in result.content[0].text

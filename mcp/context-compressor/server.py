@@ -669,6 +669,7 @@ def _compact_markdown_or_text(text: str, compact_tables: bool = True) -> str:
             continue
 
         blank_streak = 0
+        line = _compact_md_links(line)
         if _is_md_table_line(line):
             table_buffer.append(line)
         else:
@@ -685,7 +686,56 @@ def _compact_markdown_or_text(text: str, compact_tables: bool = True) -> str:
     return "\n".join(out)
 
 
-@mcp.tool()
+_MD_LINK_RE = re.compile(r"\[([^\[\]]+)\]\(([^()\s]+)\)")
+_MD_BARE_PATH_RE = re.compile(r"[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)+\.md")
+_MD_BARE_PATH_REVERSE_RE = re.compile(
+    r"(?<![\[(\w/.-])[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)+\.md(?![\])\w])"
+)
+
+
+def _link_ident(path: str) -> str:
+    """Return the short identifier of a doc path: 'bugs/01-x.md' -> 'bugs/01'."""
+    head, _, tail = path.rpartition("/")
+    cut = len(tail)
+    for ch in "-.":
+        pos = tail.find(ch)
+        if pos != -1 and pos < cut:
+            cut = pos
+    return head + "/" + tail[:cut]
+
+
+def _compact_md_links(line: str) -> str:
+    """Replace '[ident(Y)](Y)' by 'Y' for relative .md paths only (exactly reversible)."""
+    if "](" not in line or _MD_BARE_PATH_REVERSE_RE.search(line):
+        # A bare path already present would be re-linked by the reverse step: skip the line.
+        return line
+
+    out: list[str] = []
+    pos = 0
+    for m in _MD_LINK_RE.finditer(line):
+        label, target = m.group(1), m.group(2)
+        out.append(line[pos : m.start()])
+        before = "".join(out)[-1:]
+        after = line[m.end() : m.end() + 1]
+        if (
+            "/" in target
+            and target.endswith(".md")
+            and not target.lower().startswith(("http://", "https://"))
+            and label == _link_ident(target)
+            # Reversibility guards: the bare path must be re-detectable by the reverse regex.
+            and _MD_BARE_PATH_RE.fullmatch(target)
+            and not (before and re.match(r"[\[(\w/.-]", before))
+            and not (after and re.match(r"[\])\w]", after))
+        ):
+            out.append(target)
+        else:
+            out.append(m.group(0))
+        pos = m.end()
+    out.append(line[pos:])
+    return "".join(out)
+
+
+@mcp.tool(output_schema=None)
 def compress_context(
     file_path: Annotated[
         str,
@@ -750,42 +800,49 @@ def compress_context(
         return f"ERROR: Kan bestand '{validated.file_path}' niet lezen: {exc}"
 
     suffix = target.suffix.lower()
+    full_mode = validated.section is None or not validated.section.strip()
+
+    def _guard(result: str) -> str:
+        # L4: full-file mode never returns output longer than the raw file.
+        if full_mode and not result.startswith("ERROR:") and len(result) > len(raw_text):
+            return raw_text
+        return result
 
     if suffix == ".json":
-        return _compress_json_content(
+        return _guard(_compress_json_content(
             raw_text,
             dsv_for_flat_lists=validated.dsv_for_flat_lists,
             file_path=validated.file_path,
             section=validated.section,
-        )
+        ))
 
     if suffix in (".csv", ".tsv"):
-        return _compress_csv_or_tsv(
+        return _guard(_compress_csv_or_tsv(
             raw_text,
             delimiter="\t" if suffix == ".tsv" else ",",
             dsv_for_flat_lists=validated.dsv_for_flat_lists,
-        )
+        ))
 
     if suffix in (".yaml", ".yml", ".toml"):
-        return _compress_yaml_or_toml(
+        return _guard(_compress_yaml_or_toml(
             raw_text,
             section=validated.section,
             file_path=validated.file_path,
-        )
+        ))
 
     if suffix == ".py":
-        return _extract_python_code(
+        return _guard(_extract_python_code(
             raw_text,
             section=validated.section,
             file_path=validated.file_path,
-        )
+        ))
 
     if suffix in _CODE_EXTENSIONS:
-        return _extract_js_ts_code(
+        return _guard(_extract_js_ts_code(
             raw_text,
             section=validated.section,
             file_path=validated.file_path,
-        )
+        ))
 
     content = raw_text
     if validated.section is not None and validated.section.strip():
@@ -817,9 +874,9 @@ def compress_context(
             return f"ERROR: Sectie '{validated.section}' niet gevonden in '{validated.file_path}'."
         content = "\n\n".join(extracted_sections)
 
-    return _compact_markdown_or_text(
+    return _guard(_compact_markdown_or_text(
         content, compact_tables=validated.dsv_for_flat_lists
-    )
+    ))
 
 
 if __name__ == "__main__":
