@@ -6,8 +6,8 @@ status: done
 summary: Voeg 3-laags extractie (JSON-LD, SSR hydration, DOM-cards), anti-bot sessierotatie en URL+zoekfilter toe aan server.py.
 tags: [web-search, mcp, scraper, json-ld, hydration, anti-bot, filter-query, forensic-audit]
 created: 2026-10-26
-updated: 2026-10-26
-related: [bugs/01, feature/04, feature/06, feature/07, feature/09]
+updated: 2026-10-30
+related: [bugs/01, feature/04, feature/06, feature/07, feature/09, bugs/05]
 ---
 
 # Universele 3-laags website-scraper, anti-bot sessierotatie en URL+zoekfilter in web-search
@@ -82,8 +82,8 @@ P8 (⚠️ Failed URL op eBay live HTML): Rechtstreeks openen van https://www.eb
   Check: `(Select-String "mcp/web-search/server.py","C:\Users\BramFransen\.gemini\antigravity-cli\mcp\web-search\search_website.json","C:\Users\BramFransen\.gemini\antigravity-ide\mcp\web-search\search_website.json" -Pattern "filter_query" -List | Measure-Object).Count` -> `3`
 - [x] Alle unit- en opposite-tests in `mcp/web-search/tests/test_server.py` (inclusief anti-bot fail-closed test op `"Something went wrong on our end"`, JSON-LD extractie, `__NEXT_DATA__` extractie, DOM-card extractie en URL+zoekfilter) slagen.
   Check: `py -3.13 -m pytest mcp/web-search/tests/test_server.py -q` -> `passed`
-- [x] `docs/index.md` bevat de 4 nieuwe zoektermen (`JSON-LD-ItemList`, `SSR-hydration-extraction`, `TLS-fingerprint-rotation`, `anti-bot-detection`) onder `## Search keywords`, en `C:\Users\BramFransen\forensic-audit-skills` is byte-voor-byte gesynchroniseerd met deze repo.
-  Check: `py -c "import pathlib; a=pathlib.Path(r'C:\Users\BramFransen\forensic-audit-skills'); b=pathlib.Path(r'D:\Github Projects\forensic-audit-skills'); files=['CLAUDE.md','GEMINI.md','README.md','.cursor/rules/forensic-audit.mdc','mcp/web-search/server.py','mcp/web-search/tests/test_server.py']+[p.relative_to(b).as_posix() for p in (b/'skills').rglob('*') if p.is_file()]; print(sum(not (a/f).exists() or (a/f).read_bytes()!=(b/f).read_bytes() for f in files))"` -> `0`
+- [x] `docs/index.md` bevat de 4 nieuwe zoektermen (`JSON-LD-ItemList`, `SSR-hydration-extraction`, `TLS-fingerprint-rotation`, `anti-bot-detection`) onder `## Search keywords`, en `.gemini\config\skills` + `.gemini\antigravity-cli\mcp\web-search\server.py` zijn byte-voor-byte gesynchroniseerd met deze repo.
+  Check: `py -c "import pathlib; loc=pathlib.Path(r'C:\Users\BramFransen\.gemini\config\skills'); rep=pathlib.Path(r'D:\Github Projects\forensic-audit-skills\skills'); cli_srv=pathlib.Path(r'C:\Users\BramFransen\.gemini\antigravity-cli\mcp\web-search\server.py'); rep_srv=pathlib.Path(r'D:\Github Projects\forensic-audit-skills\mcp\web-search\server.py'); print(sum((loc/p.relative_to(rep)).read_bytes()!=p.read_bytes() for p in rep.rglob('*') if p.is_file() and '__pycache__' not in p.parts) + (cli_srv.read_bytes()!=rep_srv.read_bytes()))"` -> `0`
 - [x] `docs_tool.py check` geeft `docs OK` en de regressiechecks van `bugs/01` en `feature/04` slagen.
   Check: `python skills/docs-first-planner/scripts/docs_tool.py check` -> `docs OK`
 
@@ -102,3 +102,4 @@ P8 (⚠️ Failed URL op eBay live HTML): Rechtstreeks openen van https://www.eb
 | Unit- en opposite-tests in `mcp/web-search/tests/test_server.py` | `py -3.13 -m pytest mcp/web-search/tests/test_server.py -v` uitgevoerd | `14 passed in 2.90s` (incl. opposite test voor `"Something went wrong on our end"`), voldaan |
 | `## Search keywords` uitgebreid en `C:\Users\BramFransen\forensic-audit-skills` 100% byte-identiek | `Check:` uitgevoerd (Python byte-vergelijking over alle 14 kernbestanden) | `0` verschillen, voldaan |
 | `docs_tool.py check` en regressiechecks op `bugs/01` en `feature/04` | `docs_tool.py index --strict`, `docs_tool.py check` en alle `Check:`-regels van `bugs/01` en `feature/04` uitgevoerd | `docs OK`, alle regressiechecks geslaagd |
+| Regressiecheck (2026-10-30): pad-consolidatie naar `D:\Github Projects\forensic-audit-skills` (`bugs/05`) | `Check:` bijgewerkt naar `.gemini\config\skills` + `.gemini\antigravity-cli\mcp\web-search\server.py` en uitgevoerd | `0` verschillen, voldaan |

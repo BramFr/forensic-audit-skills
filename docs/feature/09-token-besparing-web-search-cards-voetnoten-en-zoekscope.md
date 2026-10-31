@@ -6,8 +6,8 @@ status: done
 summary: Bespaar 68% tot 94% op search_website tool-tokens via DOM-card <script>-strip, voetnoot-filter, artikel-behoud, max_items=20 en domein-check op Search keywords.
 tags: [mcp, web-search, token-efficiency, scraper, dom-cards, filter-query, search-keywords, subagent]
 created: 2026-10-28
-updated: 2026-10-28
-related: [feature/05, feature/07, feature/08, bugs/01, bugs/04, feature/10]
+updated: 2026-10-30
+related: [feature/05, feature/07, feature/08, bugs/01, bugs/04, feature/10, bugs/05]
 ---
 
 # Token-Besparing op Web-Search Tool Calls (DOM-Card Script-Strip, Voetnoten, Artikel-Body & Zoekscope)
@@ -68,8 +68,8 @@ Visie uit `docs/index.md`: *"Deze skills laten een AI-agent controleren in plaat
   Check: `uv run --python 3.12 --directory mcp/web-search pytest tests/test_server.py -k "footnotes or article_body" -q` -> `passed`
 - [x] Alle unit- en regressietests in `mcp/web-search/tests/test_server.py` en `mcp/context-compressor/tests/test_server.py` slagen.
   Check: `uv run --python 3.12 --directory mcp/web-search pytest tests/test_server.py -q` -> `22 passed`
-- [x] `mcp/web-search/server.py`, beide `search_website.json` schema's, alle 4 de skills (`skills/*/SKILL.md`), `references/audit-brief.md`, `GEMINI.md`, `CLAUDE.md` en `.cursor/rules/forensic-audit.mdc` bevatten de aangescherpte `## Search keywords` (inclusief standalone domein-uitzondering en `compress_context` op `index.md`) en `filter_query` richtlijn, en alle mappen zijn byte-voor-byte gesynchroniseerd.
-  Check: `py -c "import pathlib; a=pathlib.Path(r'C:\Users\BramFransen\forensic-audit-skills'); b=pathlib.Path(r'D:\Github Projects\forensic-audit-skills'); files=['CLAUDE.md','GEMINI.md','README.md','.cursor/rules/forensic-audit.mdc','mcp/web-search/server.py','mcp/web-search/tests/test_server.py','mcp/context-compressor/server.py']+[p.relative_to(b).as_posix() for p in (b/'skills').rglob('*') if p.is_file()]; print(sum(not (a/f).exists() or (a/f).read_bytes()!=(b/f).read_bytes() for f in files))"` -> `0`
+- [x] `mcp/web-search/server.py`, beide `search_website.json` schema's, alle 4 de skills (`skills/*/SKILL.md`), `references/audit-brief.md`, `GEMINI.md`, `CLAUDE.md` en `.cursor/rules/forensic-audit.mdc` bevatten de aangescherpte `## Search keywords` (inclusief standalone domein-uitzondering en `compress_context` op `index.md`) en `filter_query` richtlijn, en `.gemini\config\skills` + `.gemini\antigravity-cli\mcp\web-search\server.py` zijn byte-voor-byte gesynchroniseerd.
+  Check: `py -c "import pathlib; loc=pathlib.Path(r'C:\Users\BramFransen\.gemini\config\skills'); rep=pathlib.Path(r'D:\Github Projects\forensic-audit-skills\skills'); cli_srv=pathlib.Path(r'C:\Users\BramFransen\.gemini\antigravity-cli\mcp\web-search\server.py'); rep_srv=pathlib.Path(r'D:\Github Projects\forensic-audit-skills\mcp\web-search\server.py'); print(sum((loc/p.relative_to(rep)).read_bytes()!=p.read_bytes() for p in rep.rglob('*') if p.is_file() and '__pycache__' not in p.parts) + (cli_srv.read_bytes()!=rep_srv.read_bytes()))"` -> `0`
 - [x] `docs_tool.py check` geeft `docs OK`.
   Check: `python skills/docs-first-planner/scripts/docs_tool.py check` -> `docs OK`
 
@@ -88,4 +88,5 @@ Visie uit `docs/index.md`: *"Deze skills laten een AI-agent controleren in plaat
 | `uv run --python 3.12 --directory mcp/web-search pytest tests/test_server.py -q` | `22 passed` |
 | Mirror sync check (`C:\Users\BramFransen\forensic-audit-skills` vs `D:\Github Projects\forensic-audit-skills` vs `.gemini`) | `0` diffs |
 | `python skills/docs-first-planner/scripts/docs_tool.py check` | `docs OK` |
+| Regressiecheck (2026-10-30): pad-consolidatie naar `D:\Github Projects\forensic-audit-skills` (`bugs/05`) | `Check:` bijgewerkt naar `.gemini\config\skills` + `.gemini\antigravity-cli\mcp\web-search\server.py` (`0` diffs) |
 

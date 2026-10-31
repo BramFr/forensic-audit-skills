@@ -6,8 +6,8 @@ status: done
 summary: Dwing ## Search keywords (incl. visie/schaal prio-termen) af in search_website.json, server.py docstring en SKILL.md en sync mappen.
 tags: [planner, forensic-audit, search-keywords, web-search, mcp, tool-schema, sync, bugfix]
 created: 2026-10-25
-updated: 2026-10-27
-related: [feature/04, feature/05, bugs/02, feature/06, feature/09]
+updated: 2026-10-30
+related: [feature/04, feature/05, bugs/02, feature/06, feature/09, bugs/05]
 ---
 
 # Search keywords worden overgeslagen na lange context of door ontbrekende tool-schema instructie
@@ -96,8 +96,8 @@ related: [feature/04, feature/05, bugs/02, feature/06, feature/09]
   Check: `(Select-String skills/*/SKILL.md,skills/docs-first-planner/references/audit-brief.md,skills/docs-first-planner/references/plan-template.md,GEMINI.md,CLAUDE.md,.cursor/rules/forensic-audit.mdc -Pattern "Search keywords" -List | Measure-Object).Count` -> `9`
 - [x] Alle 8 bestanden in `skills/` zijn byte-voor-byte identiek tussen deze repo en `C:\Users\BramFransen\.gemini\config\skills`.
   Check: `py -c "import pathlib; loc=pathlib.Path(r'C:\Users\BramFransen\.gemini\config\skills'); rep=pathlib.Path(r'D:\Github Projects\forensic-audit-skills\skills'); print(sum((loc/p.relative_to(rep)).read_bytes()!=p.read_bytes() for p in rep.rglob('*') if p.is_file()))"` -> `0`
-- [x] Alle kernbestanden (`skills/`, `mcp/web-search/server.py`, `CLAUDE.md`, `GEMINI.md`, `.cursor/rules/forensic-audit.mdc`, `README.md`) in `C:\Users\BramFransen\forensic-audit-skills` zijn byte-voor-byte identiek aan `D:\Github Projects\forensic-audit-skills`.
-  Check: `py -c "import pathlib; a=pathlib.Path(r'C:\Users\BramFransen\forensic-audit-skills'); b=pathlib.Path(r'D:\Github Projects\forensic-audit-skills'); files=['CLAUDE.md','GEMINI.md','README.md','.cursor/rules/forensic-audit.mdc','mcp/web-search/server.py']+[p.relative_to(b).as_posix() for p in (b/'skills').rglob('*') if p.is_file()]; print(sum(not (a/f).exists() or (a/f).read_bytes()!=(b/f).read_bytes() for f in files))"` -> `0`
+- [x] Alle kernbestanden in `skills/` en `mcp/web-search/server.py` zijn gesynchroniseerd met `C:\Users\BramFransen\.gemini\config\skills` en `C:\Users\BramFransen\.gemini\antigravity-cli\mcp\web-search\server.py` (en `mcp_config.json` verwijst naar `D:\Github Projects\forensic-audit-skills`).
+  Check: `py -c "import pathlib; loc=pathlib.Path(r'C:\Users\BramFransen\.gemini\config\skills'); rep=pathlib.Path(r'D:\Github Projects\forensic-audit-skills\skills'); cli_srv=pathlib.Path(r'C:\Users\BramFransen\.gemini\antigravity-cli\mcp\web-search\server.py'); rep_srv=pathlib.Path(r'D:\Github Projects\forensic-audit-skills\mcp\web-search\server.py'); print(sum((loc/p.relative_to(rep)).read_bytes()!=p.read_bytes() for p in rep.rglob('*') if p.is_file() and '__pycache__' not in p.parts) + (cli_srv.read_bytes()!=rep_srv.read_bytes()))"` -> `0`
 - [x] `docs_tool.py check` geeft `docs OK` en alle regressiechecks van `feature/01` t/m `feature/04` slagen.
   Check: `python skills/docs-first-planner/scripts/docs_tool.py check` -> `docs OK`
 
@@ -116,3 +116,4 @@ related: [feature/04, feature/05, bugs/02, feature/06, feature/09]
 | 100% byte-identieke sync naar `C:\Users\BramFransen\forensic-audit-skills` | `Check:` uitgevoerd (Python byte-vergelijking over alle 13 kernbestanden) | `0` verschillen, voldaan |
 | `docs_tool.py check` en regressiechecks op `feature/01` t/m `feature/04` | `docs_tool.py index --strict`, `docs_tool.py check` en alle `Check:`-regels van `feature/01` t/m `feature/04` uitgevoerd | `docs OK`, alle checks geslaagd |
 | Regressiecheck (2026-10-27): `Search keywords` in 9 skill-/regelbestanden | `(Select-String skills/*/SKILL.md,skills/docs-first-planner/references/audit-brief.md,skills/docs-first-planner/references/plan-template.md,GEMINI.md,CLAUDE.md,.cursor/rules/forensic-audit.mdc -Pattern "Search keywords" -List \| Measure-Object).Count` | Hersteld via `feature/06` (`bugs/02`): output opnieuw `9`, en `0` byte-verschillen op alle sync-mappen, voldaan |
+| Regressiecheck (2026-10-30): pad-consolidatie naar `D:\Github Projects\forensic-audit-skills` (`bugs/05`) | `Check:` bijgewerkt naar `.gemini\config\skills` + `.gemini\antigravity-cli\mcp\web-search\server.py` en uitgevoerd | `0` verschillen, voldaan |

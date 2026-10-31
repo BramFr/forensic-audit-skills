@@ -577,3 +577,60 @@ def test_l4_full_mode_never_larger_than_raw_for_repo_files():
         assert len(out) <= len(raw), f"{p} grew: {len(out)} > {len(raw)}"
         checked += 1
     assert checked > 0
+
+
+def test_alias_choices_path_and_root_and_opposite_unknown_rejected(tmp_path: Path):
+    """bugs/05: compress_context accepts path/file/filepath and root/cwd aliases via FastMCP without schema bloat, while rejecting unknown keys and empty paths."""
+    from fastmcp.exceptions import ToolError
+    import pytest
+
+    from server import CompressContextInput
+
+    md = tmp_path / "doc.md"
+    md.write_text("# Header\n\n\nBody line.\n", encoding="utf-8")
+
+    m = CompressContextInput.model_validate({"path": "doc.md", "root": str(tmp_path)})
+    assert m.file_path == "doc.md"
+    assert m.workspace_root == str(tmp_path)
+
+    expected = compress_context(file_path="doc.md", workspace_root=str(tmp_path))
+
+    async def _run():
+        async with fastmcp.Client(mcp) as client:
+            tools = await client.list_tools()
+            tool = next(t for t in tools if t.name == "compress_context")
+            schema = tool.input_schema if hasattr(tool, "input_schema") else tool.inputSchema
+            assert schema["required"] == ["file_path"]
+            assert schema.get("additionalProperties") is False
+            assert set(schema["properties"].keys()) == {
+                "file_path",
+                "section",
+                "dsv_for_flat_lists",
+                "workspace_root",
+            }
+
+            r1 = await client.call_tool(
+                "compress_context",
+                {"path": "doc.md", "root": str(tmp_path)},
+            )
+            assert r1.content[0].text == expected
+
+            r2 = await client.call_tool(
+                "compress_context",
+                {"file": "doc.md", "cwd": str(tmp_path)},
+            )
+            assert r2.content[0].text == expected
+
+            r3 = await client.call_tool(
+                "compress_context",
+                {"filepath": "doc.md", "workspace_root": str(tmp_path)},
+            )
+            assert r3.content[0].text == expected
+
+            with pytest.raises(ToolError):
+                await client.call_tool("compress_context", {"bogus": "x"})
+
+            with pytest.raises(ToolError):
+                await client.call_tool("compress_context", {"path": "   "})
+
+    asyncio.run(_run())

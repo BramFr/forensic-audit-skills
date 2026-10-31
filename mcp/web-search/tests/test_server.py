@@ -815,3 +815,88 @@ def test_l1_tool_call_has_no_structured_content(monkeypatch):
     assert result.structured_content is None
     assert result.content[0].text == search_website("fastmcp docs")
     assert "FastMCP Documentation" in result.content[0].text
+
+
+def test_alias_choices_query_and_url_and_opposite_unknown_rejected(monkeypatch):
+    """bugs/05: search_website accepts query/url/q and filter/keywords aliases via FastMCP without schema bloat, while rejecting unknown keys and empty queries."""
+    import asyncio
+
+    import fastmcp
+    from fastmcp.exceptions import ToolError
+
+    from server import SearchWebsiteInput, mcp
+
+    # Direct Pydantic model alias check
+    m1 = SearchWebsiteInput.model_validate({"query": "  test query  ", "filter": "kw"})
+    assert m1.query_or_url == "test query"
+    assert m1.filter_query == "kw"
+    m2 = SearchWebsiteInput.model_validate({"url": "https://gofastmcp.com/docs", "keywords": "FastMCP"})
+    assert m2.query_or_url == "https://gofastmcp.com/docs"
+    assert m2.filter_query == "FastMCP"
+
+    ddg_html = """
+    <html><body>
+      <div class="result__body">
+        <a class="result__a" href="https://www.nngroup.com/articles/skeleton-screens/">Skeleton Screens 101</a>
+        <a class="result__snippet">Perceived performance with bento-grid-ui and dark-mode-ui.</a>
+      </div>
+    </body></html>
+    """
+    page_html = """
+    <html><body>
+      <main>
+        <h1>FastMCP Tools Guide</h1>
+        <p>FastMCP validates tool arguments via Pydantic TypeAdapter and AliasChoices.</p>
+      </main>
+    </body></html>
+    """
+
+    def fake_post(url, data, **kwargs):
+        return httpx.Response(200, text=ddg_html, request=httpx.Request("POST", url))
+
+    def fake_get(url, **kwargs):
+        return httpx.Response(
+            200,
+            text=page_html,
+            headers={"content-type": "text/html; charset=utf-8"},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr("server._http_post", fake_post)
+    monkeypatch.setattr("server._http_get", fake_get)
+
+    async def _run():
+        async with fastmcp.Client(mcp) as client:
+            tools = await client.list_tools()
+            tool = next(t for t in tools if t.name == "search_website")
+            schema = tool.input_schema if hasattr(tool, "input_schema") else tool.inputSchema
+            assert schema["required"] == ["query_or_url"]
+            assert schema.get("additionalProperties") is False
+            assert set(schema["properties"].keys()) == {
+                "query_or_url",
+                "filter_query",
+                "include_code",
+            }
+
+            r_query = await client.call_tool(
+                "search_website",
+                {"query": "bento-grid-ui dark-mode-ui site:nngroup.com skeleton screens perceived performance"},
+            )
+            assert "Skeleton Screens 101" in r_query.content[0].text
+
+            r_q = await client.call_tool("search_website", {"q": "skeleton screens"})
+            assert "Skeleton Screens 101" in r_q.content[0].text
+
+            r_url = await client.call_tool(
+                "search_website",
+                {"url": "https://gofastmcp.com/servers/tools", "filter": "AliasChoices"},
+            )
+            assert "AliasChoices" in r_url.content[0].text
+
+            with pytest.raises(ToolError):
+                await client.call_tool("search_website", {"bogus": "x"})
+
+            with pytest.raises(ToolError):
+                await client.call_tool("search_website", {"query": "   "})
+
+    asyncio.run(_run())

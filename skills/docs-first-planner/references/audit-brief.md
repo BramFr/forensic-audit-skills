@@ -4,7 +4,7 @@ How to apply `forensic-audit` to the current state of a project instead of a pie
 
 ## Choosing the 10 points
 
-- **P1-P5 (high impact)**: claims about the code, config, data or dependencies that the change relies on. If one is wrong the change fails or breaks something (for example "the login already supports X", "this table has column Y", "this library version offers Z").
+- **P1-P5 (high impact)**: claims about the code, config, data or dependencies that the change relies on. If one is wrong the change fails or breaks something (for example "the login already supports X", "this table has column Y", "this library version offers Z"). When there is no existing code (greenfield or non-software system), P1-P5 are the governing domain constants, safety/legal thresholds, and primary component properties without which the design fails or becomes unsafe.
 - **P6-P10 (high uncertainty)**: assumptions from the user's wish, from `./docs` items marked `planned`/`done`, from comments and names, and anything outdated or unverified (deprecated APIs, old library versions, behaviour that only works in the happy path).
 - No filler. If the area is small, split a claim into independent sub-claims (the version, the signature, the config key, the edge case).
 
@@ -16,7 +16,7 @@ Every point needs at least one of:
 - the output of a command or test that was actually run,
 - a primary source (official docs, spec, release notes) that was opened, not only a search snippet.
 
-A docs item, a comment or a function name is a hypothesis, not evidence. Before running any external search (`search_website`), check whether `./docs/index.md` exists with a `## Search keywords` section (using `compress_context(file_path="docs/index.md", section="Search keywords")` when available): when present and the request is in the project's domain, include 1 to 3 fitting keywords per query (`{selected keywords} {query}`: 1–2 leading vision/scale priority terms for architecture/UI/scale/performance queries, or 1–2 technical domain terms for protocol/RFC/spec queries; sending 0 keywords when present counts as `🚫 NOT SEARCHED`; for standalone questions outside the project's domain, search normally without project keywords). When opening `http(s)` URLs via `search_website`, pass `filter_query` (or inline `"https://... <keywords>"`) on long pages, catalogs or PDFs to keep outputs under 10 KB. Run the search for every point and record the status (🔎 / 🔍 / ⚠️ / 🚫) as forensic-audit defines it.
+A docs item, a comment or a function name is a hypothesis, not evidence. Before running any external search (`search_website(query_or_url="<query>")`), check whether `./docs/index.md` exists with a `## Search keywords` section (using `compress_context(file_path="docs/index.md", section="Search keywords")` when available): when present and the request is in the project's domain, include 1 to 3 fitting keywords per query (`{selected keywords} {query}`: 1–2 leading vision/scale priority terms for architecture/UI/scale/performance queries, or 1–2 technical domain terms for protocol/RFC/spec queries; sending 0 keywords when present counts as `🚫 NOT SEARCHED`; for standalone questions outside the project's domain, search normally without project keywords). When opening `http(s)` URLs via `search_website(query_or_url="https://...", filter_query="<keywords>")` (or inline `"https://... <keywords>"`), pass `filter_query` on long pages, catalogs or PDFs to keep outputs under 10 KB. Run the search for every point and record the status (🔎 / 🔍 / ⚠️ / 🚫) as forensic-audit defines it.
 
 ## Mapping the compact report onto the plan
 
@@ -29,7 +29,7 @@ A docs item, a comment or a function name is a hypothesis, not evidence. Before 
 
 ## Re-audit after the grill
 
-When the grill changes scope, approach or dependencies, audit only the new or changed claims (a smaller set of points is fine, the rules per point stay the same) and merge the result into the same Starting point section.
+When the grill changes scope, approach or dependencies, audit only the new or changed claims (a smaller set of points is fine, the rules per point stay the same) and merge the result into the same Starting point section. This runs inside the phase 3.5 verification loop (`references/first-principles.md`), which also re-searches every answer that sets a parameter, limit, target or method.
 
 ## Evidence rules (what counts)
 

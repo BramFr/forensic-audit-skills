@@ -25,7 +25,7 @@ with contextlib.redirect_stdout(sys.stderr):
     from ddgs.exceptions import DDGSException
     from fastmcp import FastMCP
     from lxml import html as lxml_html
-    from pydantic import BaseModel, ConfigDict, Field, field_validator
+    from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 mcp = FastMCP("web-search")
 
@@ -146,8 +146,10 @@ class SearchWebsiteInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     query_or_url: str = Field(
+        validation_alias=AliasChoices("query_or_url", "query", "url", "q"),
         description=(
-            "Search query, http(s) URL, or 'https://... <filter_keywords>' to scrape and filter a URL. "
+            "Search query, http(s) URL, or 'https://... <filter_keywords>' to scrape and filter a URL "
+            "(call as search_website(query_or_url=\"...\")). "
             "MANDATORY FOR SEARCH QUERIES: before searching, check whether ./docs/index.md exists with "
             "a '## Search keywords' section (using compress_context(file_path='docs/index.md', section='Search keywords') "
             "when available). If present AND the user's request is about the project or its domain, you MUST "
@@ -158,10 +160,11 @@ class SearchWebsiteInput(BaseModel):
             "'## Search keywords' is present. If the request is a standalone question outside the project's "
             "domain (e.g., an unrelated consumer or personal question while the project folder is open), "
             "do NOT inject project keywords into the search query."
-        )
+        ),
     )
     filter_query: str | None = Field(
         default=None,
+        validation_alias=AliasChoices("filter_query", "filter", "keywords"),
         description=(
             "Recommended keyword filter when query_or_url is an http(s) URL (or pass 'https://... <keywords>' "
             "inline in query_or_url). Pass filter_query by default on long pages, product catalogs, legal texts "
@@ -1390,8 +1393,10 @@ def search_website(
     query_or_url: Annotated[
         str,
         Field(
+            validation_alias=AliasChoices("query_or_url", "query", "url", "q"),
             description=(
-                "Search query, http(s) URL, or 'https://... <filter_keywords>' to scrape and filter a URL. "
+                "Search query, http(s) URL, or 'https://... <filter_keywords>' to scrape and filter a URL "
+                "(call as search_website(query_or_url=\"...\")). "
                 "MANDATORY FOR SEARCH QUERIES: before searching, check whether ./docs/index.md exists with "
                 "a '## Search keywords' section (using compress_context(file_path='docs/index.md', section='Search keywords') "
                 "when available). If present AND the user's request is about the project or its domain, you MUST "
@@ -1402,13 +1407,14 @@ def search_website(
                 "'## Search keywords' is present. If the request is a standalone question outside the project's "
                 "domain (e.g., an unrelated consumer or personal question while the project folder is open), "
                 "do NOT inject project keywords into the search query."
-            )
+            ),
         ),
     ],
     filter_query: Annotated[
         str | None,
         Field(
             default=None,
+            validation_alias=AliasChoices("filter_query", "filter", "keywords"),
             description=(
                 "Recommended keyword filter when query_or_url is an http(s) URL (or pass 'https://... <keywords>' "
                 "inline in query_or_url). Pass filter_query by default on long pages, product catalogs, legal texts "
@@ -1430,7 +1436,7 @@ def search_website(
         ),
     ] = False,
 ) -> str:
-    """Search DuckDuckGo for a query, or fetch a webpage/PDF/catalog as Markdown for an http(s) URL (pass filter_query or inline 'https://... <keywords>' by default on long pages, catalogs or PDFs to avoid >10 KB outputs; include_code=False by default). MANDATORY BEFORE SEARCHING: check whether ./docs/index.md exists with '## Search keywords' (via compress_context(file_path='docs/index.md', section='Search keywords') when available). If present and the question relates to the project or its domain, always include 1 to 3 fitting keywords from '## Search keywords' in every search query (1-2 leading vision/scale priority terms for architecture/UI/scale/performance queries, or 1-2 technical domain terms for protocol/RFC/standard queries; never 0 keywords). For standalone questions outside the project's domain, search normally without project keywords."""
+    """Search DuckDuckGo for a query, or fetch a webpage/PDF/catalog as Markdown for an http(s) URL via search_website(query_or_url="...", filter_query="...") (pass filter_query or inline 'https://... <keywords>' by default on long pages, catalogs or PDFs to avoid >10 KB outputs; include_code=False by default). MANDATORY BEFORE SEARCHING: check whether ./docs/index.md exists with '## Search keywords' (via compress_context(file_path='docs/index.md', section='Search keywords') when available). If present and the question relates to the project or its domain, always include 1 to 3 fitting keywords from '## Search keywords' in every search query (1-2 leading vision/scale priority terms for architecture/UI/scale/performance queries, or 1-2 technical domain terms for protocol/RFC/standard queries; never 0 keywords). For standalone questions outside the project's domain, search normally without project keywords."""
     validated = SearchWebsiteInput(
         query_or_url=query_or_url,
         filter_query=filter_query,

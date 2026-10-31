@@ -11,7 +11,7 @@ from typing import Annotated, Any
 
 with contextlib.redirect_stdout(sys.stderr):
     from fastmcp import FastMCP
-    from pydantic import BaseModel, ConfigDict, Field, field_validator
+    from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 mcp = FastMCP("context-compressor")
 
@@ -33,9 +33,11 @@ class CompressContextInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     file_path: str = Field(
+        validation_alias=AliasChoices("file_path", "path", "file", "filepath"),
         description=(
-            "Relative or absolute path to a .md, .txt, .json, .py, .ts, .tsx, .js, .jsx, .yaml, .yml, .toml, .csv, or .tsv file inside the project workspace."
-        )
+            "Relative or absolute path to a .md, .txt, .json, .py, .ts, .tsx, .js, .jsx, .yaml, .yml, .toml, .csv, or .tsv file inside the project workspace "
+            "(call as compress_context(file_path=\"...\"))."
+        ),
     )
     section: str | None = Field(
         default=None,
@@ -54,6 +56,7 @@ class CompressContextInput(BaseModel):
     )
     workspace_root: str | None = Field(
         default=None,
+        validation_alias=AliasChoices("workspace_root", "root", "cwd"),
         description=(
             "Optional explicit workspace root directory. Defaults to current working directory; "
             "paths outside workspace_root are rejected."
@@ -740,9 +743,11 @@ def compress_context(
     file_path: Annotated[
         str,
         Field(
+            validation_alias=AliasChoices("file_path", "path", "file", "filepath"),
             description=(
-                "Relative or absolute path to a .md, .txt, .json, .py, .ts, .tsx, .js, .jsx, .yaml, .yml, .toml, .csv, or .tsv file inside the project workspace."
-            )
+                "Relative or absolute path to a .md, .txt, .json, .py, .ts, .tsx, .js, .jsx, .yaml, .yml, .toml, .csv, or .tsv file inside the project workspace "
+                "(call as compress_context(file_path=\"...\"))."
+            ),
         ),
     ],
     section: Annotated[
@@ -770,6 +775,7 @@ def compress_context(
         str | None,
         Field(
             default=None,
+            validation_alias=AliasChoices("workspace_root", "root", "cwd"),
             description=(
                 "Optional explicit workspace root directory. Defaults to current working directory; "
                 "paths outside workspace_root are rejected."
