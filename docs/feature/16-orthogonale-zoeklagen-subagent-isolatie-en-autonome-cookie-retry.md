@@ -1,0 +1,92 @@
+---
+id: feature/16
+title: Orthogonale 7+10 zoeklagen, subagent-zoekisolatie, zoekwoord-scoping en autonome cookie-retry in web-search
+category: feature
+status: done
+summary: Scheid 7 D1-D7 en 10 P1-P10 queries, delegeer de zoekbatch naar een subagent, verfijn zoektermen en los cookie-walls autonoom in Python op.
+tags: [web-search, mcp, docs-first-planner, first-principles-architect, forensic-audit, subagent, search-keywords, anti-bot, token-efficiency]
+created: 2026-11-01
+updated: 2026-11-02
+related: [feature/05, feature/09, feature/13, feature/14, feature/17, feature/18]
+---
+
+# Orthogonale 7+10 zoeklagen, subagent-zoekisolatie, zoekwoord-scoping en autonome cookie-retry in web-search
+
+## Why
+Uit de live benchmark van de volledige `docs-first-planner` keten over 4 domeinvragen (IT-architectuur, Huis verbouwen, Speciaal vlees koken en Hond trainen) kwamen vijf concrete verbeterpunten naar voren: (1) de 7 dimensie-zoekopdrachten (Fase 1.5: D1–D7) en de 10 auditpunt-zoekopdrachten (Fase 2: P1–P10) moeten elk hun eigen rol houden zodat er 7 unieke laag-gerichte vragen en 10 andere vraagstuk-gerichte vragen worden gesteld zonder dubbele queries; (2) het uitvoeren van alle 17+ zoekopdrachten en pagina-scrapes rechtstreeks in de hoofd-agent vermenigvuldigt het cumulatieve tokenverbruik over ~20 beurten (tot 1,57M cumulatieve tokens), terwijl delegatie naar een zoek-subagent de flow exact intact houdt tegen ~70% minder tokens en zonder enig verlies van paginacontext; (3) het meesturen van algemene visie-termen (`zero-trust`, `fail-closed`) bij specifieke technische norm-/documentatie-queries trekt SEO-blogs aan i.p.v. primaire standaarden; (4) lange DuckDuckGo-queries (>7 woorden of gestapelde normnummers) en grote parallelle zoekbatches geven `0 results` of timeouts; en (5) pagina's zoals `pmc.ncbi.nlm.nih.gov` retourneren HTTP 203 met `# Cookies must be enabled` en een `/_pow/solve` cookie-handshake die nu niet door `_is_antibot_or_error_page` wordt herkend, waardoor `search_website` direct de foutmelding aan de AI teruggeeft in plaats van het zelf in Python op te lossen.
+
+Visie uit `docs/index.md`: *"Deze skills laten een AI-agent controleren in plaats van instemmen. Ze gaan uit van nul vertrouwen en eisen bewijs in plaats van schijn... De rapportage is compact en eerlijk over wat niet is geverifieerd."*
+
+## Starting point (audit findings)
+- Verified:
+  - Volgens INCOSE *Guide to Writing Requirements* v4 (`https://www.incose.org/wp-content/uploads/legacy/working-groups/requirements-wg/guidetowritingrequirements/incose_rwg_gtwr_v4_summary_sheet.pdf`, `🔎 SOURCED`) zijn systeem-/randvoorwaardelagen (D1–D7) en verificatiematrices op concrete claims/onderdelen (P1–P10) orthogonaal: D1–D7 zoeken per laag wat die laag inhoudt, P1–P10 toetsen de concrete beweringen en randgevallen van het vraagstuk.
+  - Volgens Anthropic (*How we built our multi-agent research system*, `https://www.anthropic.com/research/multi-agent-research-system`, `🔎 SOURCED`) houdt het delegeren van zware web-zoeklussen naar een subagent (die gestructureerde resultaten teruggeeft) het hoofd-contextvenster schoon zonder dat brontekst hoeft te worden afgekapt (`arxiv.org/html/2511.13900v1`, `🔎 SOURCED`).
+  - Volgens ISO 25964 (`https://www.niso.org/schemas/iso25964`, `🔎 SOURCED`) en W3C SKOS (`https://www.w3.org/TR/skos-reference/`, `🔎 SOURCED`) voorkomt het onderscheiden van brede conceptuele termen en specifieke technische domeintermen query-drift bij gecontroleerde zoekwoord-expansie.
+  - In `mcp/web-search/server.py:63-70, 193-206, 245-300` (`⚙️ EXECUTED` live test op `https://pmc.ncbi.nlm.nih.gov/articles/PMC5672612/`) retourneert NCBI PMC HTTP status `203` (5.581 bytes) met `<h1>Cookies must be enabled</h1>` en een inline `/_pow/solve` SHA-256 cookie-challenge. Omdat `_ANTIBOT_PATTERNS` dit niet matcht, geeft `_is_antibot_or_error_page` `False` terug en stuurt `search_website` de cookie-foutmelding direct terug naar de AI. Live uitvoering met Python stdlib `hashlib.sha256` op dezelfde `curl_cffi` Session lost `/_pow/solve` in `<0,5s` op (`HTTP 200`, `156.802` bytes volledige artikeltekst), en de bestaande `_fetch_html_via_browser` (Playwright) haalt eveneens `160.422` bytes op (`⚙️ EXECUTED`).
+  - In `skills/docs-first-planner/scripts/docs_tool.py:207-216` (`⚙️ EXECUTED` + Python `argparse` docs `https://docs.python.org/3/library/argparse.html`, `🔎 SOURCED`) staat `--docs` alleen op de hoofdparser geregistreerd, waardoor `python docs_tool.py check --docs docs` faalt met exit code 2.
+- Corrected:
+  - Pijnpunt 1 gecorrigeerd: we voegen de 7 D1–D7 en 10 P1–P10 zoekopdrachten **niet** samen tot minder zoekopdrachten, maar zorgen dat het 7 unieke laag-zoekopdrachten + 10 andere vraagstuk-zoekopdrachten zijn (17 verschillende queries).
+  - Pijnpunt 2 gecorrigeerd (verworpen): we voegen **geen** karakterlimiet of tekst-afkapping toe aan `mcp/web-search/server.py`, zodat er nooit waardevolle context uit primaire bronnen verloren gaat.
+- Unverified: none (alle 10 auditpunten zijn met `🔎 SOURCED` en `⚙️ EXECUTED` geverifieerd).
+
+## Decisions (from the grill)
+| Question | Decision | Reason |
+| --- | --- | --- |
+| 1. Autonome retry-volgorde in Python bij `"Cookies must be enabled"` (Pijnpunt 6) | Volledige 4-staps escalatie in Python zonder nieuwe libraries (1: herken cookie-wall in ruwe HTML én geëxtraheerde tekst -> 2: los cookie-priming en stdlib SHA-256 `/_pow/solve` op binnen dezelfde `curl_cffi` Session -> 3: roteer over de 5 TLS-profielen met `Referer`/cookies -> 4: schakel automatisch door naar `_fetch_html_via_browser` Playwright, en geef pas bij totaal falen `ERROR:` terug aan de AI) | Lost cookie-gates zoals op PubMed Central in <0,5s autonoom in Python op zonder terug te keren naar de AI en zonder extra dependencies |
+| 2. Subagent-delegatie voor de 7 + 10 zoekopdrachten (Pijnpunt 1 & 3) | Hoofd-agent doet Fase 0 en 1, delegeert de 7 D1–D7 laag-searches + 10 P1–P10 audit-searches naar één `research`/`self` subagent (die alle pagina's ongekort leest en twee `#schema:` tabellen teruggeeft), waarna de hoofd-agent zelf Fase 2.5, 3, 3.5 en 4 uitvoert | Behoudt 100% van de `docs-first-planner` flow en alle volledige paginacontext, maar bespaart ~70% aan cumulatieve tokens in de hoofd-agent |
+| 3. Zoekregels (Pijnpunt 1, 2, 4, 5) + CLI-fix `docs_tool.py` | Alle punten samen uitvoeren in `feature/16` (geen tekst-afkapping; 7 laag-queries vs. 10 vraagstuk-queries; vaktechnische keywords voor externe normen/docs; korte 4–6 woorden DuckDuckGo queries in batches van 2–3; `--docs` vlag voor én na subcommando in `docs_tool.py`) | Maakt zowel de skills als `mcp/web-search/server.py` en `docs_tool.py` in één gecontroleerde slag consistent |
+
+## Scope
+- In:
+  1. **Autonome multi-step cookie-wall & PoW retry in `mcp/web-search/server.py` (zonder nieuwe libraries)**:
+     - Breid `_ANTIBOT_PATTERNS` uit met `"cookies must be enabled"`, `"enable cookies for"`, `"please enable cookies"`, `"__identity_pow_cookie_check"` en `"/_pow/solve"`.
+     - Voeg een hulpfunctie `_try_solve_cookie_or_pow_challenge(session, url, html_text, headers, timeout)` (puur Python stdlib: `hashlib`, `re`, `json`, `urllib.parse`) toe aan `_http_get`: wanneer een response een inline SHA-256 PoW cookie-challenge (`/_pow/solve` met `challengeId` en `bits`) of een origin-cookie gate bevat, lost Python de challenge op dezelfde `curl_cffi` sessie op en haalt de pagina direct opnieuw op.
+     - Als de huidige sessie/poging nog steeds een cookie-wall of anti-bot pagina geeft, probeert `_http_get` eerst een origin-cookie handshake (`GET` op `scheme://netloc/` gevolgd door `GET` op de doel-URL met `Referer`) en roteert over alle 5 de `IMPERSONATE_PROFILES` (`chrome`, `safari260`, `safari184`, `firefox144`, `safari184_ios`).
+     - Voeg in `_html_to_markdown` een post-extractie guard toe (Upgrade 1): als de geëxtraheerde platte tekst kort is (`< 600` tekens) en nog steeds een cookie-/anti-bot blokkademelding matcht, retourneert `_html_to_markdown` `None` zodat `_fetch_url_as_markdown` automatisch doorschakelt naar Tier 3 (`_fetch_html_via_browser` via Playwright) voordat er iets naar de AI gaat. Pas als ook die faalt, retourneert `search_website` een eerlijke `ERROR:`.
+  2. **Orthogonale 7 + 10 zoeklagen, Subagent-isolatie & Zoekwoord/Query-regels in de Skills (`skills/docs-first-planner/SKILL.md`, `skills/first-principles-architect/SKILL.md`, `skills/docs-first-planner/references/first-principles-architect.md`, `skills/forensic-audit/SKILL.md`, `skills/docs-first-planner/references/audit-brief.md`, `CLAUDE.md`, `GEMINI.md`, `.cursor/rules/forensic-audit.mdc`, `mcp/web-search/server.py` docstring & `search_website.json`)**:
+     - **Pijnpunt 1 (7 unieke laag-searches vs. 10 unieke vraagstuk-searches)**: Leg expliciet vast dat de 7 zoekopdrachten van Fase 1.5 (`first-principles-architect` Phase 0) per dimensie D1 t/m D7 zoeken wat die specifieke laag/principe inhoudt (7 unieke vraagstellingen per laag), en dat de 10 zoekopdrachten van Fase 2 (`forensic-audit`) de 10 concrete claims, componenten en randgevallen van het vraagstuk toetsen — zodat je altijd **andere zoekopdrachten en andere resultaten** krijgt en nooit dezelfde query herhaalt.
+     - **Pijnpunt 3 (Subagent-isolatie zonder flow-verlies)**: Leg in `docs-first-planner/SKILL.md` vast dat de hoofd-agent Fase 0 en Fase 1 uitvoert, vervolgens de gecombineerde web-onderzoeksbatch van Fase 1.5 (7 D1–D7 laag-queries) + Fase 2 (10 P1–P10 audit-queries) bij voorkeur delegeert naar een `research`/`self` subagent (met een voorgebouwd Context Pack of de instructie om `compress_context(file_path="skills/forensic-audit/SKILL.md", section="Principles,Pre-build use (principles research)")` te gebruiken op `SKILL.md`- en referentiebestanden in plaats van volledige `read_file`-aanroepen, wat nog eens ~15k–18k tokens per subagent-run bespaart) die de primaire bronnen volledig (zonder afkapping) opent en twee `#schema:` tabellen (het D1–D7 criteria-register én de P1–P10 audittabel) teruggeeft, waarna de hoofd-agent zelf Fase 2.5, Fase 3 (Grill), Fase 3.5 en Fase 4 uitvoert.
+     - **Pijnpunt 4 (Selectieve `## Search keywords` zonder SEO-vervuiling)**: Leg vast dat voor architectuur-, UI-, workflow- of projectvisie-vragen 1–2 leidende visie/schaal-termen uit `## Search keywords` worden gekozen, maar dat voor **externe standaard-, RFC-, wet-, library- of wetenschappelijke zoekopdrachten** uitsluitend 1–2 **vaktechnische/methodische** termen uit `## Search keywords` (zoals `ISO-NEN-IEC`, `IETF-RFC`, `NIST-SP-800`, `OWASP-ASVS`, `primary-source-verification`, `Python-stdlib`) worden gekozen en **geen** abstracte visie-woorden zoals `zero-trust` of `no-fake-green` die SEO-marketingblogs aantrekken.
+     - **Pijnpunt 5 (Korte, trefzekere DuckDuckGo-queries in kleine batches)**: Leg vast dat elke DuckDuckGo-zoekopdracht kort en bondig blijft (**4 tot 6 kernwoorden** naast de 1–2 project-keywords, één taal en één standaard/concept per query, nooit meerdere normnummers stapelen) en in kleine batches (max. 2–3 DuckDuckGo-queries tegelijk) wordt uitgevoerd om timeouts en `0 results` te voorkomen.
+  3. **Flexibele `--docs` CLI-vlag in `skills/docs-first-planner/scripts/docs_tool.py`**:
+     - Ondersteun `--docs <pad>` zowel vóór als ná het subcommando (`python docs_tool.py --docs docs check` én `python docs_tool.py check --docs docs`).
+  4. **Unit-tests, Synchronisatie & MCP-herstart**:
+     - Voeg unit-tests toe aan `mcp/web-search/tests/test_server.py` voor: (a) detectie van `"Cookies must be enabled"` / HTTP 203 `/_pow/solve` in `_is_antibot_or_error_page`, (b) autonome stdlib `/_pow/solve` cookie-clearance en retry in `_http_get` zonder terugkeer naar de AI, (c) post-extractie cookie-wall vangnet en fail-closed `ERROR:` gedrag wanneer alle pogingen mislukken.
+     - Synchroniseer alle gewijzigde bestanden byte-identiek met `skills/docs-first-planner/references/first-principles-architect.md`, `C:\Users\BramFransen\.gemini\config\skills` en `C:\Users\BramFransen\.gemini\antigravity-cli\mcp\web-search` en herstart de `web-search` MCP-daemon.
+- Out (explicitly not doing):
+  - **Geen tekst- of karakter-afkapping op pagina's of PDF's (Pijnpunt 2)**: we verlagen het aantal geëxtraheerde blokken niet en knippen geen tekst weg, zodat er nooit waardevolle context verloren gaat.
+  - **Geen nieuwe externe Python-libraries** toevoegen aan `mcp/web-search/pyproject.toml`.
+
+## Approach
+1. **Delegeer de code-wijzigingen in `mcp/web-search/server.py`, `mcp/web-search/tests/test_server.py` en `skills/docs-first-planner/scripts/docs_tool.py` met een lossless Context Pack naar een schone code-subagent (`invoke_subagent`)** -> verify: `uv run --python 3.12 --directory mcp/web-search pytest tests/test_server.py -q` en `python skills/docs-first-planner/scripts/docs_tool.py check --docs docs`
+2. **Delegeer de tekst-updates voor Pijnpunt 1, 3, 4 en 5 in de skills (`docs-first-planner/SKILL.md`, `first-principles-architect/SKILL.md`, `references/first-principles-architect.md`, `references/audit-brief.md`, `forensic-audit/SKILL.md`), `CLAUDE.md`, `GEMINI.md`, `.cursor/rules/forensic-audit.mdc` en `search_website.json` en synchroniseer alle kopieën byte-identiek** -> verify: `python skills/docs-first-planner/scripts/docs_tool.py check`
+3. **Herstart de `web-search` MCP-daemon en verifieer live op `https://pmc.ncbi.nlm.nih.gov/articles/PMC5672612/` dat `search_website` automatisch het volledige artikel ophaalt in plaats van `# Cookies must be enabled`** -> verify: live Python + `pytest` check.
+
+## Acceptance criteria
+- [x] `_is_antibot_or_error_page` en `_http_get` in `mcp/web-search/server.py` herkennen `"Cookies must be enabled"` / `"enable cookies for"` / `"/_pow/solve"` en lossen de cookie-/PoW-handshake en profiel-/browser-retries autonoom in Python op zonder nieuwe externe libraries; een live fetch van `https://pmc.ncbi.nlm.nih.gov/articles/PMC5672612/` retourneert de daadwerkelijke artikeltekst en niet `# Cookies must be enabled`.
+  Check: `uv run --python 3.12 --directory mcp/web-search pytest tests/test_server.py -k "cookie or pow or antibot" -q` -> `passed`
+- [x] Wanneer alle autonome retry-pogingen in Python (cookie-priming, PoW-solve, TLS-profielrotatie en Playwright fallback) op een geblokkeerde pagina mislukken, retourneert `_fetch_url_as_markdown` een `ERROR:` (fail-closed, opposite test).
+  Check: `uv run --python 3.12 --directory mcp/web-search pytest tests/test_server.py -q` -> `passed`
+- [x] `docs_tool.py` accepteert `--docs <pad>` zowel vóór als ná het subcommando (`check`, `index`, `next`, `modules`).
+  Check: `python skills/docs-first-planner/scripts/docs_tool.py check --docs docs` -> `docs OK`
+- [x] `skills/first-principles-architect/SKILL.md` is de enige canonieke bron (zonder duplicaat in `references/`), bevat géén vakspecifieke termen in de body, en legt samen met `docs-first-planner/SKILL.md` en `forensic-audit/SKILL.md` de orthogonale 7+10 zoekregel, de subagent-zoekdelegatie, het onderscheid tussen visie- en vaktechnische keywords, en de 4–6 woorden query-regel vast.
+  Check: `python -c "import pathlib; print(not pathlib.Path('skills/docs-first-planner/references/first-principles-architect.md').exists() and pathlib.Path('skills/first-principles-architect/SKILL.md').exists())"` -> `True`
+- [x] Alle bestanden in `skills/` en `mcp/web-search/server.py` zijn byte-voor-byte gesynchroniseerd met `C:\Users\BramFransen\.gemini\config\skills` en `C:\Users\BramFransen\.gemini\antigravity-cli\mcp\web-search\server.py`, en `docs_tool.py check` geeft `docs OK`.
+  Check: `py -c "import pathlib; loc=pathlib.Path(r'C:\Users\BramFransen\.gemini\config\skills'); rep=pathlib.Path(r'D:\Github Projects\forensic-audit-skills\skills'); cli_srv=pathlib.Path(r'C:\Users\BramFransen\.gemini\antigravity-cli\mcp\web-search\server.py'); rep_srv=pathlib.Path(r'D:\Github Projects\forensic-audit-skills\mcp\web-search\server.py'); print(sum((loc/p.relative_to(rep)).read_bytes()!=p.read_bytes() for p in rep.rglob('*') if p.is_file() and '__pycache__' not in p.parts) + (cli_srv.read_bytes()!=rep_srv.read_bytes()))"` -> `0`
+
+## Risks and open points
+- Sommige websites met zware externe CAPTCHA's (zoals Cloudflare Turnstile met menselijke klik-verificatie) kunnen ook na alle Python- en headless-browser pogingen geblokkeerd blijven; in dat geval zorgt de fail-closed eindstap ervoor dat `search_website` na alle pogingen een eerlijke `ERROR:` teruggeeft aan de AI, zodat die een andere primaire bron kiest.
+
+## Relations
+- Bouwt voort op: `feature/05`, `feature/09`, `feature/13`, `feature/14`.
+
+## Verification
+
+#schema:Criterion|How checked|Result
+Autonome cookie-wall & `/_pow/solve` retry in `mcp/web-search/server.py` zonder nieuwe libraries|`uv run --python 3.12 --directory mcp/web-search pytest tests/test_server.py -k "cookie or pow or antibot" -q` + live fetch op `PMC5672612` én `PMC7521022`|`passed` + beide PMC-studies in 1 call `🔎 SOURCED` (40/72 en 40/115 blokken)
+Autonome `curl: (61) Unrecognized content encoding` retry (`HTTP_CONTENT_DECODING: 0` + `Accept-Encoding: identity`)|`uv run --python 3.12 --directory mcp/web-search pytest tests/test_server.py -k "curl_61" -q` + live fetch op `https://www.iana.org/assignments/http-status-codes/http-status-codes.txt`|`passed` + IANA `.txt` in 1 call `🔎 SOURCED`
+Fail-closed opposite test wanneer alle autonome retry-lagen falen|`uv run --python 3.12 --directory mcp/web-search pytest tests/test_server.py -q`|`27 passed`
+Flexibele `--docs` CLI-vlag in `docs_tool.py` vóór en ná subcommando|`python skills/docs-first-planner/scripts/docs_tool.py check --docs docs`|`docs OK`
+Byte-identieke kopie en 0 vakspecifieke woorden in `first-principles-architect`|`filecmp.cmp` + regex check op `skills/first-principles-architect/SKILL.md`|`True` + `0` hits
+Volledige synchronisatie naar `.gemini\config\skills` en `.gemini\antigravity-cli\mcp\web-search`|Byte-voor-byte vergelijking + `docs_tool.py check`|`0` diffs + `docs OK`
+Live Before vs. After Benchmark (`4ea93832`, 7 D1–D7 laag-queries + 10 P1–P10 claim-queries)|JSONL-telemetrie vergeleken met nulmeting over de 4 domeinvragen|Hoofd-agent web-context: `62.700 -> 2.279 tok` (**-96,4%**); Eind-context subagent: `107.360 -> 53.761 tok` (**-49,9%**); Cumulatieve tokens: `1.080.649 -> 467.041 tok` (**-56,8%**); `0` dubbele queries, `0` timeouts, `100%` `🔎 SOURCED` op alle 17 punten

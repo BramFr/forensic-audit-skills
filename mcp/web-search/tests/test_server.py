@@ -5,10 +5,21 @@ from pydantic import ValidationError
 
 from server import (
     SearchWebsiteInput,
+    _SEARCH_CACHE,
+    _URL_CACHE,
     _is_antibot_or_error_page,
     _unwrap_consent_redirect,
     search_website,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_session_caches():
+    _SEARCH_CACHE.clear()
+    _URL_CACHE.clear()
+    yield
+    _SEARCH_CACHE.clear()
+    _URL_CACHE.clear()
 
 
 def _make_sample_pdf_bytes(text: str) -> bytes:
@@ -870,12 +881,13 @@ def test_alias_choices_query_and_url_and_opposite_unknown_rejected(monkeypatch):
             tools = await client.list_tools()
             tool = next(t for t in tools if t.name == "search_website")
             schema = tool.input_schema if hasattr(tool, "input_schema") else tool.inputSchema
-            assert schema["required"] == ["query_or_url"]
             assert schema.get("additionalProperties") is False
             assert set(schema["properties"].keys()) == {
                 "query_or_url",
+                "queries_or_urls",
                 "filter_query",
                 "include_code",
+                "auto_open_top",
             }
 
             r_query = await client.call_tool(
@@ -900,3 +912,620 @@ def test_alias_choices_query_and_url_and_opposite_unknown_rejected(monkeypatch):
                 await client.call_tool("search_website", {"query": "   "})
 
     asyncio.run(_run())
+
+
+def test_autonomous_pow_and_cookie_wall_retry_in_http_get(monkeypatch):
+    """feature/16: _http_get autonomously solves SHA-256 /_pow/solve cookie challenges (like NCBI PMC HTTP 203) and retries on the same session without returning 'Cookies must be enabled'."""
+    import hashlib
+    import json
+
+    pow_html = """
+    <!doctype html>
+    <html><body>
+      <div id="cookie-required">
+        <h1>Cookies must be enabled</h1>
+        <p>Enable cookies for pmc.ncbi.nlm.nih.gov and reload this page to continue.</p>
+      </div>
+      <script>
+        const challengeId = "test-pmc-123";
+        const bits = 8;
+        fetch("/_pow/solve", { method: "POST" });
+      </script>
+    </body></html>
+    """
+    article_html = """
+    <html><body>
+      <main>
+        <h1>Wagyu Intramuscular Fat Study</h1>
+        <p>Melting temperature of oleic acid in Japanese Black cattle is below 38 C.</p>
+      </main>
+    </body></html>
+    """
+    state = {"pow_solved": False, "get_calls": 0, "post_calls": 0}
+
+    class FakeSession:
+        def __init__(self):
+            self.cookies = {}
+
+        def get(self, url, **kwargs):
+            state["get_calls"] += 1
+            req = httpx.Request("GET", url)
+            if not state["pow_solved"]:
+                return httpx.Response(
+                    203,
+                    headers={"content-type": "text/html; charset=utf-8"},
+                    text=pow_html,
+                    request=req,
+                )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=article_html,
+                request=req,
+            )
+
+        def post(self, url, data=None, **kwargs):
+            state["post_calls"] += 1
+            assert url == "https://pmc.ncbi.nlm.nih.gov/_pow/solve"
+            payload = json.loads(data)
+            assert payload["challenge_id"] == "test-pmc-123"
+            nonce = int(payload["nonce"])
+            digest = hashlib.sha256(f"test-pmc-123:{nonce}".encode()).digest()
+            assert int.from_bytes(digest, "big") >> (256 - 8) == 0
+            state["pow_solved"] = True
+            req = httpx.Request("POST", url)
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/json"},
+                text='{"success": true}',
+                request=req,
+            )
+
+    fake_session = FakeSession()
+    monkeypatch.setattr(
+        "server._get_or_create_session", lambda profile: fake_session
+    )
+
+    out = search_website("https://pmc.ncbi.nlm.nih.gov/articles/PMC5672612/")
+    assert state["pow_solved"] is True
+    assert state["post_calls"] == 1
+    assert state["get_calls"] == 2
+    assert "Wagyu Intramuscular Fat Study" in out
+    assert "Melting temperature of oleic acid" in out
+    assert "Cookies must be enabled" not in out
+
+
+def test_opposite_cookie_wall_all_tiers_exhausted_fails_closed(monkeypatch):
+    """feature/16 opposite test: when a page returns 'Cookies must be enabled' across all HTTP attempts and Playwright fallback, or is padded >45KB with only a cookie-wall message, search_website fails closed with ERROR."""
+    short_cookie_wall = (
+        "<html><body><h1>Cookies must be enabled</h1>"
+        "<p>Enable cookies for example.com and reload this page to continue.</p>"
+        "</body></html>"
+    )
+    assert _is_antibot_or_error_page(
+        203, short_cookie_wall, "https://example.com/locked"
+    )
+    assert _is_antibot_or_error_page(
+        200, short_cookie_wall, "https://example.com/locked"
+    )
+
+    class AlwaysBlockedSession:
+        def __init__(self):
+            self.cookies = {}
+
+        def get(self, url, **kwargs):
+            req = httpx.Request("GET", url)
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=short_cookie_wall,
+                request=req,
+            )
+
+    monkeypatch.setattr(
+        "server._get_or_create_session", lambda profile: AlwaysBlockedSession()
+    )
+    monkeypatch.setattr(
+        "server._fetch_html_via_browser", lambda url, timeout=25.0: None
+    )
+
+    out_short = search_website("https://example.com/locked")
+    assert out_short.startswith("ERROR:")
+    assert "Cookies must be enabled" not in out_short
+
+    padded_cookie_wall = (
+        "<html><head><style>" + ("/* pad */ " * 5000) + "</style></head>"
+        "<body><h1>Cookies must be enabled</h1>"
+        "<p>Enable cookies for example.com and reload this page to continue.</p>"
+        "</body></html>"
+    )
+    assert len(padded_cookie_wall) > 45000
+
+    class PaddedBlockedSession:
+        def __init__(self):
+            self.cookies = {}
+
+        def get(self, url, **kwargs):
+            req = httpx.Request("GET", url)
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text=padded_cookie_wall,
+                request=req,
+            )
+
+    monkeypatch.setattr(
+        "server._get_or_create_session", lambda profile: PaddedBlockedSession()
+    )
+    out_padded = search_website("https://example.com/locked-padded")
+    assert out_padded.startswith("ERROR:")
+    assert "Cookies must be enabled" not in out_padded
+
+
+def test_http_get_retries_with_identity_encoding_on_curl_61(monkeypatch):
+    """When curl_cffi raises curl: (61) Unrecognized content encoding, _http_get retries with Accept-Encoding: identity."""
+    calls: list[dict[str, str]] = []
+
+    class FakeIdentitySession:
+        def __init__(self):
+            self.cookies = {}
+
+        def get(self, url, headers=None, **kwargs):
+            hdrs = dict(headers or {})
+            calls.append(hdrs)
+            if hdrs.get("Accept-Encoding") != "identity":
+                raise RuntimeError(
+                    "Failed to perform, curl: (61) Unrecognized content encoding type."
+                )
+            req = httpx.Request("GET", url)
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/plain; charset=utf-8"},
+                text="200 OK [RFC9110]\n429 Too Many Requests [RFC6585]\n",
+                request=req,
+            )
+
+    monkeypatch.setattr(
+        "server._get_or_create_session", lambda profile: FakeIdentitySession()
+    )
+
+    out = search_website(
+        "https://www.iana.org/assignments/http-status-codes/http-status-codes.txt"
+    )
+    assert len(calls) == 2
+    assert calls[0].get("Accept-Encoding") != "identity"
+    assert calls[1].get("Accept-Encoding") == "identity"
+    assert "200 OK" in out
+    assert "429 Too Many Requests" in out
+    assert not out.startswith("ERROR:")
+
+
+def test_batch_queries_or_urls_and_inline_pipe_deduplicates_urls(monkeypatch):
+    """feature/17: search_website supports batching via queries_or_urls=[...] and 'q1 || q2' and deduplicates URLs across DuckDuckGo results in the same batch."""
+    post_calls: list[str] = []
+
+    def fake_post(url, data, **kwargs):
+        q = data.get("q", "")
+        post_calls.append(q)
+        if "first" in q:
+            html = """
+            <html><body>
+              <div class="result__body">
+                <a class="result__a" href="https://shared.example.org/spec">Shared Spec</a>
+                <a class="result__snippet">Shared primary standard document.</a>
+              </div>
+              <div class="result__body">
+                <a class="result__a" href="https://only1.example.org/doc">Only First</a>
+                <a class="result__snippet">First unique result.</a>
+              </div>
+            </body></html>
+            """
+        else:
+            html = """
+            <html><body>
+              <div class="result__body">
+                <a class="result__a" href="https://shared.example.org/spec">Shared Spec Duplicate</a>
+                <a class="result__snippet">Duplicate URL that should be omitted in batch item 2.</a>
+              </div>
+              <div class="result__body">
+                <a class="result__a" href="https://only2.example.org/doc">Only Second</a>
+                <a class="result__snippet">Second unique result.</a>
+              </div>
+            </body></html>
+            """
+        return httpx.Response(200, text=html, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr("server._http_post", fake_post)
+
+    out_batch = search_website(
+        queries_or_urls=["ISO-NEN-IEC first query", "ISO-NEN-IEC second query"]
+    )
+    assert len(post_calls) == 2
+    assert "\n\n---\n\n" in out_batch
+    assert out_batch.count("https://shared.example.org/spec") == 1
+    assert "https://only1.example.org/doc" in out_batch
+    assert "https://only2.example.org/doc" in out_batch
+
+    # Inline '||' batching hits session cache without extra HTTP calls
+    out_inline = search_website(
+        "ISO-NEN-IEC first query || ISO-NEN-IEC second query"
+    )
+    assert len(post_calls) == 2
+    assert out_inline == out_batch
+
+
+def test_session_search_and_url_cache_and_opposite_error_never_cached(monkeypatch):
+    """feature/17: _SEARCH_CACHE and _URL_CACHE prevent duplicate HTTP requests on identical queries/URLs, while ERROR responses are never cached (opposite test)."""
+    get_calls = {"ok": 0, "err": 0}
+
+    def fake_get(url, **kwargs):
+        req = httpx.Request("GET", url)
+        if "fail" in url:
+            get_calls["err"] += 1
+            return httpx.Response(503, text="Service Unavailable", request=req)
+        get_calls["ok"] += 1
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text="<html><body><article><h1>Cached Normative Document</h1><p>Verified threshold is 42.</p></article></body></html>",
+            request=req,
+        )
+
+    monkeypatch.setattr("server._http_get", fake_get)
+    monkeypatch.setattr("server._fetch_html_via_browser", lambda url, timeout=25.0: None)
+
+    out1 = search_website("https://example.org/cached-doc")
+    out2 = search_website("https://example.org/cached-doc")
+    assert out1 == out2
+    assert "Cached Normative Document" in out1
+    assert get_calls["ok"] == 1
+
+    # Opposite test: ERROR response is never cached and retries on next call
+    err1 = search_website("https://example.org/fail-doc")
+    err2 = search_website("https://example.org/fail-doc")
+    assert err1.startswith("ERROR:")
+    assert err2.startswith("ERROR:")
+    assert get_calls["err"] == 2
+
+
+def test_feature18_rfc3986_normalize_cache_url_and_sorted_filter_key(monkeypatch):
+    """feature/18: _normalize_cache_url normalizes scheme/host case, default ports, unreserved %XX, #fragment, and trailing slash; _normalize_filter_key normalizes token order; different functional query params do not collide (opposite test)."""
+    from server import _normalize_cache_url, _normalize_filter_key
+
+    u1 = _normalize_cache_url("HTTPS://Example.ORG:443/docs/%7Euser/spec/?utm_source=x&id=1#section-4")
+    u2 = _normalize_cache_url("https://example.org/docs/~user/spec?id=1#other-fragment")
+    assert u1 == "https://example.org/docs/~user/spec?id=1"
+    assert u1 == u2
+
+    # Opposite check: distinct functional query parameters stay distinct
+    u_diff = _normalize_cache_url("https://example.org/docs/~user/spec?id=2")
+    assert u1 != u_diff
+
+    assert _normalize_filter_key("RFC 3986, URI! normalization") == _normalize_filter_key(
+        "normalization uri rfc 3986"
+    )
+
+    get_calls = {"count": 0}
+
+    def fake_get(url, **kwargs):
+        get_calls["count"] += 1
+        req = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=(
+                "<html><body><article>"
+                "<h1>RFC 3986 URI Generic Syntax</h1>"
+                "<p>Section 6 defines normalization and comparison of URI references.</p>"
+                "</article></body></html>"
+            ),
+            request=req,
+        )
+
+    monkeypatch.setattr("server._http_get", fake_get)
+
+    out1 = search_website(
+        "HTTPS://Example.ORG:443/rfc/rfc3986/#section-6",
+        filter_query="normalization comparison",
+    )
+    out2 = search_website(
+        "https://example.org/rfc/rfc3986#section-2",
+        filter_query="comparison, Normalization!",
+    )
+    assert out1 == out2
+    assert get_calls["count"] == 1
+
+
+def test_feature18_toc_dotted_lines_and_rfc_footer_stripped_and_batch_scaling(monkeypatch):
+    """feature/18: _clean_plain_text_body strips ToC dotted lines and RFC page headers/footers while keeping normal numbered sentences (opposite test); batch mode scales blocks/headings/DDG results without character slicing."""
+    from server import _clean_plain_text_body
+
+    raw_rfc = (
+        "1. Introduction .................................................... 4\n"
+        "6.2.2. Syntax-Based Normalization . . . . . . . . . . . . . . . . . 39\n"
+        "Berners-Lee, et al.         Standards Track                    [Page 39]\n"
+        "Section 6.2.2 states that case normalization applies to scheme and host.\n"
+        "Wait 5 seconds before retrying port 443.\n"
+    )
+    cleaned = _clean_plain_text_body(raw_rfc, include_code=False)
+    assert "1. Introduction" not in cleaned
+    assert "6.2.2. Syntax-Based Normalization" not in cleaned
+    assert "[Page 39]" not in cleaned
+    assert "Section 6.2.2 states that case normalization applies to scheme and host." in cleaned
+    assert "Wait 5 seconds before retrying port 443." in cleaned
+
+    # Batch scaling test: 4 URLs with 25 matching paragraphs each + H4 headings
+    paragraphs = "\n\n".join(
+        f"<h4>Subheading {i}</h4><p>Normative token budget requirement paragraph number {i} with complete unclipped sentence.</p>"
+        for i in range(1, 26)
+    )
+    big_html = f"<html><body><article><h1>Main Spec</h1>{paragraphs}</article></body></html>"
+
+    def fake_get(url, **kwargs):
+        req = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=big_html,
+            request=req,
+        )
+
+    monkeypatch.setattr("server._http_get", fake_get)
+
+    batch_urls = [
+        f"https://example.org/spec-{idx} token budget"
+        for idx in range(1, 5)
+    ]
+    batch_out = search_website(queries_or_urls=batch_urls)
+    assert "## Filtered Matches (8 of " in batch_out
+    assert "blocks matching `token budget`" in batch_out
+    assert "with complete unclipped sentence." in batch_out
+    assert "#### Subheading" not in batch_out
+    assert len(batch_out.encode("utf-8")) <= 10240
+
+
+def test_feature19_auto_open_top_authority_ranking_and_failover(monkeypatch):
+    """feature/19 (Upgrade 1): auto_open_top and inline 'open:' rank primary authority domains (Tier 1 > Tier 2 > Tier 3) and fail over to hit #2 if hit #1 returns ERROR."""
+    from server import _rank_primary_authority_urls
+
+    candidates = [
+        {"href": "https://medium.com/random-blog/http-caching"},
+        {"href": "https://github.com/org/repo/blob/main/README.md"},
+        {"href": "https://www.rfc-editor.org/rfc/rfc9111"},
+    ]
+    ranked = _rank_primary_authority_urls(candidates)
+    assert ranked == [
+        "https://www.rfc-editor.org/rfc/rfc9111",
+        "https://github.com/org/repo/blob/main/README.md",
+        "https://medium.com/random-blog/http-caching",
+    ]
+
+    ddg_html = """
+    <html><body>
+      <div class="result__body">
+        <a class="result__a" href="https://medium.com/blog/caching">Blog Post</a>
+        <a class="result__snippet">Secondary blog post about caching.</a>
+      </div>
+      <div class="result__body">
+        <a class="result__a" href="https://www.rfc-editor.org/rfc/rfc9111-broken">Broken Tier 1</a>
+        <a class="result__snippet">Broken link that fails with 403.</a>
+      </div>
+      <div class="result__body">
+        <a class="result__a" href="https://datatracker.ietf.org/doc/html/rfc9111">RFC 9111 HTTP Caching</a>
+        <a class="result__snippet">Normative IETF HTTP Caching specification.</a>
+      </div>
+    </body></html>
+    """
+
+    def fake_post(url, data, **kwargs):
+        return httpx.Response(200, text=ddg_html, request=httpx.Request("POST", url))
+
+    fetched_urls: list[str] = []
+
+    def fake_get(url, **kwargs):
+        fetched_urls.append(url)
+        req = httpx.Request("GET", url)
+        if "broken" in url:
+            return httpx.Response(403, text="Forbidden", request=req)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=(
+                "<html><body><article>"
+                "<h1>RFC 9111 Section 4.3 Validation</h1>"
+                "<p>The If-None-Match header field makes a request method conditional on ETag revalidation.</p>"
+                "</article></body></html>"
+            ),
+            request=req,
+        )
+
+    monkeypatch.setattr("server._http_post", fake_post)
+    monkeypatch.setattr("server._http_get", fake_get)
+    monkeypatch.setattr("server._fetch_html_via_browser", lambda url, timeout=25.0: None)
+
+    out = search_website("open: IETF-RFC RFC 9111 ETag revalidation")
+    assert "# DuckDuckGo Search Results for: `IETF-RFC RFC 9111 ETag revalidation`" in out
+    assert "# Source: https://datatracker.ietf.org/doc/html/rfc9111" in out
+    assert "If-None-Match header field makes a request method conditional" in out
+    # Tier 1 broken URL was tried first, then failed over to Tier 1 datatracker.ietf.org (skipping Tier 3 medium.com!)
+    assert fetched_urls == [
+        "https://www.rfc-editor.org/rfc/rfc9111-broken",
+        "https://datatracker.ietf.org/doc/html/rfc9111",
+    ]
+
+
+def test_feature19_batch_byte_budget_slack_redistribution_and_ddgs_snippet_guard(monkeypatch):
+    """feature/19 (Upgrade 2): _clean_ddgs_snippet deduplicates repeated multi-card sentences within <=380 B without mid-sentence cuts, and batch mode enforces <=9,500 B with slack redistribution."""
+    from server import _clean_ddgs_snippet
+
+    repeated_body = (
+        "Lost in the Middle shows U-shaped performance on long contexts. "
+        "Lost in the Middle shows U-shaped performance on long contexts. "
+        "Models retrieve best from the very beginning and very end of the input window. "
+        + ("Extra card sentence number X with unrelated metadata that would bloat the snippet past 380 bytes easily. " * 6)
+    )
+    cleaned_snip = _clean_ddgs_snippet(repeated_body, max_bytes=380)
+    assert len(cleaned_snip.encode("utf-8")) <= 380
+    assert cleaned_snip.count("Lost in the Middle shows U-shaped performance") == 1
+    assert cleaned_snip.endswith(".")
+
+    # Opposite check: a single long first sentence (>380 B) is never cut mid-sentence
+    long_single_sentence = "A" * 420 + " complete ending."
+    kept_single = _clean_ddgs_snippet(long_single_sentence, max_bytes=380)
+    assert kept_single == long_single_sentence
+
+    # Batch budget test: 1 short DDG search + 3 very large unfiltered URLs (each ~12 KB raw)
+    def fake_post(url, data, **kwargs):
+        html = """
+        <html><body>
+          <div class="result__body">
+            <a class="result__a" href="https://sqlite.org/wal.html">SQLite WAL</a>
+            <a class="result__snippet">Write-Ahead Logging mode in SQLite.</a>
+          </div>
+        </body></html>
+        """
+        return httpx.Response(200, text=html, request=httpx.Request("POST", url))
+
+    long_blocks = "\n\n".join(
+        f"<h2>Section {i}</h2><p>Normative specification paragraph {i} about sqlite wal concurrency and checkpointing with a complete ending sentence.</p>"
+        for i in range(1, 60)
+    )
+    huge_html = f"<html><body><article><h1>SQLite WAL Spec</h1>{long_blocks}</article></body></html>"
+
+    def fake_get(url, **kwargs):
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html; charset=utf-8"},
+            text=huge_html,
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr("server._http_post", fake_post)
+    monkeypatch.setattr("server._http_get", fake_get)
+
+    batch_res = search_website(
+        queries_or_urls=[
+            "Python-stdlib sqlite wal mode",
+            "https://sqlite.org/wal-spec-1",
+            "https://sqlite.org/wal-spec-2",
+            "https://sqlite.org/wal-spec-3",
+        ]
+    )
+    total_bytes = len(batch_res.encode("utf-8"))
+    assert total_bytes <= 9500
+    assert "with a complete ending sentence." in batch_res
+
+
+def test_feature19_sqlite_wal_cache_rfc9111_etag_304_and_session_delta_reslicing(monkeypatch, tmp_path):
+    """feature/19 (Upgrade 5): SQLite WAL persists cached pages across memory eviction, revalidates expired entries via If-None-Match/304, omits already-shown blocks & ToC on 2nd filter_query in same session, and never caches ERROR responses (opposite test)."""
+    db_file = tmp_path / "test_web_cache.sqlite3"
+    monkeypatch.setenv("WEB_SEARCH_CACHE_DB", str(db_file))
+    _URL_CACHE.clear()
+
+    state = {"get_calls": 0, "last_headers": {}, "return_304": False}
+    doc_html = (
+        "<html><body><article>"
+        "<h1>RFC 9111 Caching</h1>"
+        "<h2>Freshness Lifetime</h2>"
+        "<p>Shared paragraph about freshness lifetime and ETag validation in HTTP caches.</p>"
+        "<h2>Validation Model</h2>"
+        "<p>Unique second paragraph explaining If-None-Match 304 Not Modified validation responses.</p>"
+        "</article></body></html>"
+    )
+
+    def fake_get(url, **kwargs):
+        state["get_calls"] += 1
+        state["last_headers"] = dict(kwargs.get("extra_headers") or {})
+        req = httpx.Request("GET", url)
+        if "broken-500" in url:
+            return httpx.Response(500, text="Internal Server Error", request=req)
+        if state["return_304"]:
+            return httpx.Response(304, headers={"etag": '"v1-rfc9111"'}, text="", request=req)
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "text/html; charset=utf-8",
+                "etag": '"v1-rfc9111"',
+            },
+            text=doc_html,
+            request=req,
+        )
+
+    monkeypatch.setattr("server._http_get", fake_get)
+    monkeypatch.setattr("server._fetch_html_via_browser", lambda url, timeout=25.0: None)
+
+    # 1. First filtered call fetches from network and populates SQLite WAL + _SESSION_SENT_BLOCKS
+    out1 = search_website("https://www.rfc-editor.org/rfc/rfc9111", filter_query="freshness")
+    assert state["get_calls"] == 1
+    assert "## Page Headings Index" in out1
+    assert "Shared paragraph about freshness lifetime" in out1
+
+    # 2. Second filtered call on SAME URL with DIFFERENT filter_query in same session:
+    #    0 network calls (served from SQLite WAL) AND omits ToC + already-shown block!
+    out2 = search_website("https://www.rfc-editor.org/rfc/rfc9111", filter_query="validation")
+    assert state["get_calls"] == 1
+    assert "## Page Headings Index" not in out2
+    assert "Shared paragraph about freshness lifetime" not in out2
+    assert "Unique second paragraph explaining If-None-Match 304 Not Modified" in out2
+    assert "already-shown blocks & ToC omitted for this URL in current session" in out2
+
+    # 3. Simulate process restart (evict in-memory dict only) + expire SQLite row to test RFC 9111 ETag -> 304
+    dict.clear(_URL_CACHE)
+    from server import _SESSION_SENT_BLOCKS, _get_sqlite_conn
+
+    _SESSION_SENT_BLOCKS.clear()
+    conn = _get_sqlite_conn()
+    assert conn is not None
+    mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
+    assert str(mode).lower() == "wal"
+    conn.execute("UPDATE http_cache SET expires_at = 1.0")
+    conn.commit()
+
+    state["return_304"] = True
+    out3 = search_website("https://www.rfc-editor.org/rfc/rfc9111", filter_query="freshness")
+    assert state["get_calls"] == 2
+    assert state["last_headers"].get("If-None-Match") == '"v1-rfc9111"'
+    assert "Shared paragraph about freshness lifetime" in out3
+
+    # 4. Opposite test: ERROR response is never stored in SQLite http_cache
+    err_out = search_website("https://www.rfc-editor.org/rfc/broken-500")
+    assert err_out.startswith("ERROR:")
+    cur = conn.execute(
+        "SELECT COUNT(*) FROM http_cache WHERE norm_url LIKE '%broken-500%'"
+    )
+    assert cur.fetchone()[0] == 0
+
+
+def test_feature20_search_website_json_schema_under_3100_bytes():
+    """feature/20: search_website FastMCP tool schema and search_website.json stay strictly <= 3,100 B while preserving mandatory ## Search keywords rules."""
+    import asyncio
+    import json
+    from pathlib import Path
+    import fastmcp
+    from server import mcp
+
+    async def _check():
+        async with fastmcp.Client(mcp) as client:
+            tools = await client.list_tools()
+            t = next(x for x in tools if x.name == "search_website")
+            schema = t.input_schema if hasattr(t, "input_schema") else t.inputSchema
+            obj = {"name": t.name, "description": t.description, "parameters": schema}
+            dumped = json.dumps(obj, separators=(",", ":"), sort_keys=False)
+            dumped = dumped.replace("<", "\\u003c").replace(">", "\\u003e")
+            return dumped
+
+    schema_str = asyncio.run(_check())
+    assert len(schema_str.encode("utf-8")) <= 3100
+    assert "## Search keywords" in schema_str
+    assert "auto_open_top" in schema_str
+    assert "filter_query" in schema_str
+    assert "queries_or_urls" in schema_str
+
+    schema_file = Path(__file__).resolve().parents[1] / "search_website.json"
+    assert schema_file.is_file()
+    assert len(schema_file.read_bytes()) <= 3100
+
+
+
+
+

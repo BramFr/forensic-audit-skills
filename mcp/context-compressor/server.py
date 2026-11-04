@@ -1,6 +1,7 @@
 # Boundaries: see MODULE.md
 import ast
 import contextlib
+import copy
 import csv
 import io
 import json
@@ -10,7 +11,18 @@ from pathlib import Path
 from typing import Annotated, Any
 
 with contextlib.redirect_stdout(sys.stderr):
-    from fastmcp import FastMCP
+    try:
+        from fastmcp import FastMCP
+    except ImportError:
+        class FastMCP:  # type: ignore[no-redef]
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def tool(self, **kwargs: Any):  # type: ignore[no-untyped-def]
+                return lambda fn: fn
+
+            def run(self) -> None:
+                pass
     from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 mcp = FastMCP("context-compressor")
@@ -27,6 +39,14 @@ _JS_TS_SIG_RE = re.compile(
 _JS_TS_METHOD_RE = re.compile(
     r"^\s{2,4}(?:(?:public|private|protected|static|readonly|async|override)\s+)*(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\([^;]*\)\s*(?::\s*[^{;]+)?\s*\{"
 )
+_HEAVY_PLAN_SECTION_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("starting point", "Starting point"),
+    ("decisions", "Decisions"),
+    ("scope", "Scope"),
+    ("approach", "Approach"),
+    ("acceptance criteria", "Acceptance criteria"),
+    ("verification", "Verification"),
+)
 
 
 class CompressContextInput(BaseModel):
@@ -42,7 +62,7 @@ class CompressContextInput(BaseModel):
     section: str | None = Field(
         default=None,
         description=(
-            "Optional selector: for .md/.txt use '--frontmatter', '--headings', or one/more comma-separated heading names ('Why,Scope'); "
+            "Optional selector: for .md/.txt use '--frontmatter', '--headings', '--all', or one/more comma-separated heading names ('Why,Scope'); "
             "for .py/.ts/.js use '--signatures' ('--outline') or comma-separated symbol names ('func1,ClassA'); "
             "for .json/.yaml/.toml use comma-separated top-level keys ('routes,version')."
         ),
@@ -60,6 +80,14 @@ class CompressContextInput(BaseModel):
         description=(
             "Optional explicit workspace root directory. Defaults to current working directory; "
             "paths outside workspace_root are rejected."
+        ),
+    )
+    filter_query: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("filter_query", "filter", "query", "keywords"),
+        description=(
+            "Optional keyword filter for Markdown/#schema: tables (>= 4 columns, e.g. docs/index.md): "
+            "matching rows keep all columns, non-matching rows are projected to their first 3 columns (ID|Status|Title)."
         ),
     )
 
@@ -290,6 +318,27 @@ def _compress_yaml_or_toml(raw_text: str, section: str | None, file_path: str) -
     return "\n".join(out)
 
 
+def _compact_sig_args(args: ast.arguments) -> str:
+    copied = copy.deepcopy(args)
+    for node in ast.walk(copied):
+        if isinstance(node, ast.Call):
+            func_name = ""
+            if isinstance(node.func, ast.Name):
+                func_name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                func_name = node.func.attr
+            if func_name == "Field":
+                for kw in node.keywords:
+                    if (
+                        kw.arg == "description"
+                        and isinstance(kw.value, ast.Constant)
+                        and isinstance(kw.value.value, str)
+                        and len(kw.value.value) > 20
+                    ):
+                        kw.value = ast.Constant(value=Ellipsis)
+    return ast.unparse(copied)
+
+
 def _format_py_func_sig(node: ast.FunctionDef | ast.AsyncFunctionDef, indent: str = "", include_line_range: bool = True) -> list[str]:
     res: list[str] = []
     start_line = min([node.lineno] + [d.lineno for d in node.decorator_list])
@@ -299,7 +348,7 @@ def _format_py_func_sig(node: ast.FunctionDef | ast.AsyncFunctionDef, indent: st
     if include_line_range:
         res.append(f"{indent}# L{start_line}-L{end_line}")
     prefix = "async def " if isinstance(node, ast.AsyncFunctionDef) else "def "
-    args_str = ast.unparse(node.args)
+    args_str = _compact_sig_args(node.args)
     ret_str = f" -> {ast.unparse(node.returns)}" if node.returns else ""
     doc = ast.get_docstring(node)
     first_doc = doc.splitlines()[0].strip() if doc and doc.splitlines() else ""
@@ -502,6 +551,173 @@ def _extract_frontmatter(text: str) -> str | None:
     return None
 
 
+def _strip_heavy_plan_sections(text: str) -> tuple[str, str | None]:
+    """Automatically omit heavy execution/audit sections from a plan document in default full-file mode (section=None) while keeping compact 2-column Decisions and Scope (Out)."""
+    fm = _extract_frontmatter(text)
+    if fm is None:
+        return text, None
+    if not all(
+        re.search(rf"^{key}\s*:", fm, re.IGNORECASE | re.MULTILINE)
+        for key in ("id", "category", "status")
+    ):
+        return text, None
+
+    lines = text.splitlines()
+    in_fence = False
+    fence_marker = ""
+    found_plan_headings = 0
+    for line in lines:
+        fence_match = _FENCE_RE.match(line)
+        if fence_match:
+            marker = fence_match.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+            elif marker[0] == fence_marker and len(marker) >= 3:
+                in_fence = False
+                fence_marker = ""
+            continue
+        if in_fence:
+            continue
+        hm = _HEADING_RE.match(line)
+        if hm and len(hm.group(1)) == 2:
+            ht = hm.group(2).strip().casefold()
+            if any(ht.startswith(pfx) for pfx, _ in _HEAVY_PLAN_SECTION_PREFIXES):
+                found_plan_headings += 1
+
+    if found_plan_headings < 2:
+        return text, None
+
+    m_title = re.search(r"^title\s*:\s*(.+)$", fm, re.IGNORECASE | re.MULTILINE)
+    fm_title = m_title.group(1).strip().casefold() if m_title else ""
+
+    kept_lines: list[str] = []
+    omitted_labels: list[str] = []
+    in_fence = False
+    fence_marker = ""
+    active_section: str | None = None
+    decisions_buf: list[str] = []
+    scope_out_buf: list[str] = []
+    in_scope_out = False
+    scope_had_in = False
+
+    def _flush_active_section() -> None:
+        nonlocal active_section, decisions_buf, scope_out_buf, in_scope_out, scope_had_in
+        if active_section == "Decisions":
+            if decisions_buf:
+                kept_lines.append("## Decisions")
+                kept_lines.extend(decisions_buf)
+                if "Decisions (Reason)" not in omitted_labels:
+                    omitted_labels.append("Decisions (Reason)")
+            elif "Decisions" not in omitted_labels:
+                omitted_labels.append("Decisions")
+            decisions_buf = []
+        elif active_section == "Scope":
+            while scope_out_buf and not scope_out_buf[-1].strip():
+                scope_out_buf.pop()
+            if scope_out_buf:
+                kept_lines.append("## Scope")
+                kept_lines.extend(scope_out_buf)
+                if scope_had_in and "Scope (In)" not in omitted_labels:
+                    omitted_labels.append("Scope (In)")
+            elif "Scope" not in omitted_labels:
+                omitted_labels.append("Scope")
+            scope_out_buf = []
+            in_scope_out = False
+            scope_had_in = False
+        active_section = None
+
+    for line in lines:
+        fence_match = _FENCE_RE.match(line)
+        if fence_match:
+            marker = fence_match.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+            elif marker[0] == fence_marker and len(marker) >= 3:
+                in_fence = False
+                fence_marker = ""
+            if active_section is None:
+                kept_lines.append(line)
+            continue
+
+        if not in_fence:
+            hm = _HEADING_RE.match(line)
+            if hm:
+                level = len(hm.group(1))
+                ht_raw = hm.group(2).strip()
+                ht = ht_raw.casefold()
+                if level == 1 and fm_title and ht == fm_title:
+                    continue
+                if level <= 2:
+                    _flush_active_section()
+                    matched_label = next(
+                        (label for pfx, label in _HEAVY_PLAN_SECTION_PREFIXES if level == 2 and ht.startswith(pfx)),
+                        None,
+                    )
+                    if matched_label is not None:
+                        active_section = matched_label
+                        if matched_label not in ("Decisions", "Scope") and matched_label not in omitted_labels:
+                            omitted_labels.append(matched_label)
+                        continue
+
+        if active_section is None:
+            if not in_fence and line.lstrip().startswith("Visie uit `docs/index.md`:"):
+                continue
+            kept_lines.append(line)
+        elif active_section == "Decisions" and not in_fence:
+            if _is_md_table_line(line):
+                cells = _split_md_table_cells(line)
+                if len(cells) >= 3:
+                    if _is_md_table_sep_row(cells):
+                        decisions_buf.append("| --- | --- |")
+                    else:
+                        c0, c1 = cells[0], cells[1]
+                        m_bold = re.match(r"^(\*\*[^*]+\*\*)", c1)
+                        if m_bold and len(c1) > 85:
+                            c1 = m_bold.group(1)
+                        if len(c1) > 65:
+                            c1 = re.sub(r"\s*\([^)]+\)", "", c1)
+                        if len(c0) > 65:
+                            c0 = re.sub(r"\s*\([^)]+\)", "", c0)
+                            if len(c0) > 65 and ":" in c0:
+                                c0 = c0.split(":", 1)[0]
+                        decisions_buf.append(f"| {c0} | {c1} |")
+                else:
+                    decisions_buf.append(line)
+            else:
+                s = line.strip()
+                if s.startswith(("- ", "* ")) or re.match(r"^\d+\.\s", s):
+                    decisions_buf.append(line.rstrip())
+        elif active_section == "Scope" and not in_fence:
+            if re.match(r"^\s{0,1}[-*]\s+", line):
+                if re.match(r"^\s{0,1}[-*]\s+(?:\*\*Out\b|Out\b)", line, re.IGNORECASE):
+                    in_scope_out = True
+                    scope_out_buf.append(line.rstrip())
+                else:
+                    in_scope_out = False
+                    scope_had_in = True
+            elif in_scope_out:
+                if not line.strip() or line.startswith(("  ", "\t")):
+                    scope_out_buf.append(line.rstrip())
+                else:
+                    in_scope_out = False
+                    scope_had_in = True
+            elif line.strip():
+                scope_had_in = True
+
+    _flush_active_section()
+
+    if not omitted_labels:
+        return text, None
+
+    notice = (
+        '<!-- Omitted plan sections (use section="Scope,Approach,Acceptance criteria" '
+        f'or section="--all" to load): {", ".join(omitted_labels)} -->'
+    )
+    return "\n".join(kept_lines), notice
+
+
 def _extract_markdown_headings(text: str) -> str | None:
     lines = text.splitlines()
     in_fence = False
@@ -525,15 +741,21 @@ def _extract_markdown_headings(text: str) -> str | None:
     return "\n".join(headings) if headings else None
 
 
-def _extract_markdown_section(text: str, section_query: str) -> str | None:
-    """Extract a Markdown heading block by case-insensitive substring match outside code fences."""
+def _extract_markdown_section_range(
+    lines: list[str], section_query: str
+) -> tuple[int, int] | None:
+    """Find (start_line_idx, end_line_idx) of a Markdown heading block outside code fences.
+
+    Prioritizes an exact case-insensitive heading match or prefix match before ':'/'('
+    over a generic substring match.
+    """
     needle = section_query.strip().casefold()
-    lines = text.splitlines()
+    if not needle:
+        return None
 
     in_fence = False
     fence_marker = ""
-    start_idx: int | None = None
-    target_level: int = 0
+    headings: list[tuple[int, int, str]] = []
 
     for idx, line in enumerate(lines):
         fence_match = _FENCE_RE.match(line)
@@ -556,18 +778,86 @@ def _extract_markdown_section(text: str, section_query: str) -> str | None:
 
         level = len(heading_match.group(1))
         heading_text = heading_match.group(2).strip()
+        headings.append((idx, level, heading_text))
 
-        if start_idx is None:
-            if needle in heading_text.casefold():
-                start_idx = idx
-                target_level = level
+    if not headings:
+        return None
+
+    # Prefer section headings (H2..H6) over the top-level document title (H1) within each match tier
+    ordered_positions = [
+        i for i, (_, lvl, _) in enumerate(headings) if lvl >= 2
+    ] + [i for i, (_, lvl, _) in enumerate(headings) if lvl == 1]
+
+    match_pos: int | None = None
+    # Pass 1: exact case-insensitive match
+    for pos in ordered_positions:
+        _, _, h_text = headings[pos]
+        if h_text.casefold() == needle:
+            match_pos = pos
+            break
+
+    # Pass 2: prefix match before ':' or '('
+    if match_pos is None:
+        for pos in ordered_positions:
+            _, _, h_text = headings[pos]
+            prefix = re.split(r"\s*[:(]", h_text.casefold(), maxsplit=1)[0].strip()
+            if prefix and prefix == needle:
+                match_pos = pos
+                break
+
+    # Pass 3: substring fallback
+    if match_pos is None:
+        for pos in ordered_positions:
+            _, _, h_text = headings[pos]
+            if needle in h_text.casefold():
+                match_pos = pos
+                break
+
+    if match_pos is None:
+        return None
+
+    start_idx, target_level, _ = headings[match_pos]
+    for next_idx, next_level, _ in headings[match_pos + 1 :]:
+        if next_level <= target_level:
+            return (start_idx, next_idx)
+    return (start_idx, len(lines))
+
+
+def _merge_section_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Deduplicate and merge overlapping or contained (start_idx, end_idx) ranges in order of first appearance."""
+    merged: list[tuple[int, int]] = []
+    for s, e in ranges:
+        overlap_idx: int | None = None
+        for idx, (es, ee) in enumerate(merged):
+            if s < ee and e > es:
+                overlap_idx = idx
+                break
+        if overlap_idx is None:
+            merged.append((s, e))
         else:
-            if level <= target_level:
-                return "\n".join(lines[start_idx:idx])
+            es, ee = merged[overlap_idx]
+            ns, ne = min(es, s), max(ee, e)
+            merged[overlap_idx] = (ns, ne)
+            # Collapse any subsequent ranges that now overlap with merged[overlap_idx]
+            k = overlap_idx + 1
+            while k < len(merged):
+                ks, ke = merged[k]
+                if ns < ke and ne > ks:
+                    ns, ne = min(ns, ks), max(ne, ke)
+                    merged[overlap_idx] = (ns, ne)
+                    merged.pop(k)
+                else:
+                    k += 1
+    return merged
 
-    if start_idx is not None:
-        return "\n".join(lines[start_idx:])
-    return None
+
+def _extract_markdown_section(text: str, section_query: str) -> str | None:
+    """Extract a Markdown heading block by exact/prefix priority or case-insensitive substring match outside code fences."""
+    lines = text.splitlines()
+    rng = _extract_markdown_section_range(lines, section_query)
+    if rng is None:
+        return None
+    return "\n".join(lines[rng[0] : rng[1]])
 
 
 def _split_md_table_cells(line: str) -> list[str]:
@@ -599,19 +889,71 @@ def _compact_table_line(line: str) -> str:
     return "|" + "|".join(compacted_cells) + "|"
 
 
-def _format_table_block(table_lines: list[str], convert_to_dsv: bool) -> list[str]:
-    if convert_to_dsv and len(table_lines) >= 4:
+def _extract_filter_terms(filter_query: str | None) -> list[str]:
+    if not filter_query or not filter_query.strip():
+        return []
+    terms = [t.lower() for t in re.split(r"\W+", filter_query) if len(t) >= 2]
+    if not terms:
+        terms = [filter_query.strip().lower()]
+    return terms
+
+
+def _format_table_block(
+    table_lines: list[str],
+    convert_to_dsv: bool,
+    compact_tags: bool | str = False,
+    filter_query: str | None = None,
+) -> list[str]:
+    if convert_to_dsv and len(table_lines) >= 3:
         header_cells = _split_md_table_cells(table_lines[0])
         sep_cells = _split_md_table_cells(table_lines[1])
-        if _is_md_table_sep_row(sep_cells):
+        if _is_md_table_sep_row(sep_cells) and (len(table_lines) >= 4 or (compact_tags and len(header_cells) >= 4)):
             dsv_lines = ["#schema:" + "|".join(header_cells)]
-            for row_line in table_lines[2:]:
-                dsv_lines.append("|".join(_split_md_table_cells(row_line)))
+            tag_cols = {
+                i
+                for i, h in enumerate(header_cells)
+                if h.strip().lower() in ("tags", "keywords")
+            }
+            is_doc_index = [h.strip().lower() for h in header_cells[:3]] == ["id", "status", "title"]
+            filter_terms = _extract_filter_terms(filter_query)
+            data_rows = table_lines[2:]
+            total_rows = len(data_rows)
+            for row_idx, row_line in enumerate(data_rows):
+                cells = _split_md_table_cells(row_line)
+                raw_row_lower = row_line.lower()
+                if compact_tags:
+                    if compact_tags == "section" and is_doc_index and cells and re.match(r"^[a-z]+/\d+-", cells[0]):
+                        cells[0] = _link_ident(cells[0])
+                    if tag_cols:
+                        for col_idx in tag_cols:
+                            if col_idx < len(cells):
+                                cells[col_idx] = cells[col_idx].replace(", ", ",")
+                if filter_terms and len(header_cells) >= 4:
+                    haystack = raw_row_lower + " " + " ".join(cells).lower()
+                    if not any(term in haystack for term in filter_terms):
+                        cells = cells[:3]
+                elif (
+                    not filter_terms
+                    and is_doc_index
+                    and compact_tags == "section"
+                    and total_rows > 18
+                    and len(cells) > 1
+                    and cells[1].strip().lower() == "done"
+                    and tag_cols
+                ):
+                    cells = [c for idx_c, c in enumerate(cells) if idx_c not in tag_cols]
+                dsv_lines.append("|".join(cells))
             return dsv_lines
     return [_compact_table_line(tl) for tl in table_lines]
 
 
-def _compact_markdown_or_text(text: str, compact_tables: bool = True) -> str:
+def _compact_markdown_or_text(
+    text: str,
+    compact_tables: bool = True,
+    strip_html_comments: bool = True,
+    section_mode: bool = False,
+    filter_query: str | None = None,
+) -> str:
     """Compact blank lines and Markdown tables while preserving frontmatter and code fences verbatim."""
     lines = text.splitlines()
     if not lines:
@@ -636,17 +978,27 @@ def _compact_markdown_or_text(text: str, compact_tables: bool = True) -> str:
     fence_len = 0
     blank_streak = 0
     table_buffer: list[str] = []
+    filter_terms = _extract_filter_terms(filter_query)
+    active_dsv_cols = 0
 
     def _flush_table_buffer() -> None:
         nonlocal table_buffer
         if table_buffer:
-            out.extend(_format_table_block(table_buffer, convert_to_dsv=compact_tables))
+            out.extend(
+                _format_table_block(
+                    table_buffer,
+                    convert_to_dsv=compact_tables,
+                    compact_tags="section" if section_mode else strip_html_comments,
+                    filter_query=filter_query,
+                )
+            )
             table_buffer = []
 
     for line in lines[idx:]:
         fence_match = _FENCE_RE.match(line)
         if fence_match:
             _flush_table_buffer()
+            active_dsv_cols = 0
             marker = fence_match.group(1)
             if not in_fence:
                 in_fence = True
@@ -664,8 +1016,23 @@ def _compact_markdown_or_text(text: str, compact_tables: bool = True) -> str:
             out.append(line)
             continue
 
-        if not line.strip():
+        stripped_line = line.strip()
+        if (
+            strip_html_comments
+            and stripped_line.startswith("<!--")
+            and stripped_line.endswith("-->")
+            and "-->" not in stripped_line[4:-3]
+        ):
+            continue
+
+        if section_mode and stripped_line == "---":
+            continue
+
+        if not stripped_line:
             _flush_table_buffer()
+            active_dsv_cols = 0
+            if section_mode:
+                continue
             blank_streak += 1
             if blank_streak == 1:
                 out.append("")
@@ -673,10 +1040,34 @@ def _compact_markdown_or_text(text: str, compact_tables: bool = True) -> str:
 
         blank_streak = 0
         line = _compact_md_links(line)
+        if strip_html_comments and stripped_line.startswith("[") and stripped_line.endswith("]") and ", " in line:
+            line = line.replace(", ", ",")
         if _is_md_table_line(line):
+            active_dsv_cols = 0
             table_buffer.append(line)
         else:
             _flush_table_buffer()
+            if stripped_line.startswith("#schema:"):
+                active_dsv_cols = len(_UNESCAPED_PIPE_RE.split(stripped_line[8:]))
+            elif stripped_line.startswith("#"):
+                active_dsv_cols = 0
+            elif active_dsv_cols >= 4 and filter_terms and "|" in line:
+                parts = _UNESCAPED_PIPE_RE.split(line.rstrip())
+                if len(parts) >= 4 and not any(t in line.lower() for t in filter_terms):
+                    line = "|".join(parts[:3])
+            if (
+                strip_html_comments
+                and out
+                and out[-1] == ""
+                and (
+                    _HEADING_RE.match(line)
+                    or (
+                        section_mode
+                        and stripped_line.startswith(("**", "- ", "1. ", "#schema:"))
+                    )
+                )
+            ):
+                out.pop()
             out.append(line.rstrip())
 
     _flush_table_buffer()
@@ -755,7 +1146,7 @@ def compress_context(
         Field(
             default=None,
             description=(
-                "Optional selector: for .md/.txt use '--frontmatter', '--headings', or one/more comma-separated heading names ('Why,Scope'); "
+                "Optional selector: for .md/.txt use '--frontmatter', '--headings', '--all', or one/more comma-separated heading names ('Why,Scope'); "
                 "for .py/.ts/.js use '--signatures' ('--outline') or comma-separated symbol names ('func1,ClassA'); "
                 "for .json/.yaml/.toml use comma-separated top-level keys ('routes,version')."
             ),
@@ -782,10 +1173,22 @@ def compress_context(
             ),
         ),
     ] = None,
+    filter_query: Annotated[
+        str | None,
+        Field(
+            default=None,
+            validation_alias=AliasChoices("filter_query", "filter", "query", "keywords"),
+            description=(
+                "Optional keyword filter for Markdown/#schema: tables (>= 4 columns, e.g. docs/index.md): "
+                "matching rows keep all columns, non-matching rows are projected to their first 3 columns (ID|Status|Title)."
+            ),
+        ),
+    ] = None,
 ) -> str:
     """Losslessly compress a workspace .md, .txt, .json, .py, .ts, .js, .yaml, .toml, or .csv file for context packs.
 
-    Supports Markdown section extraction (--frontmatter, --headings, or multi-section A,B,C),
+    Supports Markdown section extraction (--frontmatter, --headings, --all, or multi-section A,B,C),
+    tiered table column projection via filter_query, automatic slim plan-reads on ./docs/<cat>/NN-*.md when section=None (keeping 2-column Decisions Question|Decision and Scope Out),
     Python/TS/JS AST --signatures and symbol extraction, table/CSV/JSON Positional Pipe-DSV (#schema:col1|col2...)
     for flat lists with N >= 2, and RFC 8259 JSON/YAML/TOML compaction.
     """
@@ -794,6 +1197,7 @@ def compress_context(
         section=section,
         dsv_for_flat_lists=dsv_for_flat_lists,
         workspace_root=workspace_root,
+        filter_query=filter_query,
     )
 
     target = _resolve_safe_path(validated.file_path, validated.workspace_root)
@@ -806,7 +1210,9 @@ def compress_context(
         return f"ERROR: Kan bestand '{validated.file_path}' niet lezen: {exc}"
 
     suffix = target.suffix.lower()
-    full_mode = validated.section is None or not validated.section.strip()
+    raw_sec = (validated.section or "").strip()
+    force_all = raw_sec.lower() in ("--all", "all")
+    full_mode = not raw_sec or force_all
 
     def _guard(result: str) -> str:
         # L4: full-file mode never returns output longer than the raw file.
@@ -819,7 +1225,7 @@ def compress_context(
             raw_text,
             dsv_for_flat_lists=validated.dsv_for_flat_lists,
             file_path=validated.file_path,
-            section=validated.section,
+            section=None if force_all else validated.section,
         ))
 
     if suffix in (".csv", ".tsv"):
@@ -832,27 +1238,28 @@ def compress_context(
     if suffix in (".yaml", ".yml", ".toml"):
         return _guard(_compress_yaml_or_toml(
             raw_text,
-            section=validated.section,
+            section=None if force_all else validated.section,
             file_path=validated.file_path,
         ))
 
     if suffix == ".py":
         return _guard(_extract_python_code(
             raw_text,
-            section=validated.section,
+            section=None if force_all else validated.section,
             file_path=validated.file_path,
         ))
 
     if suffix in _CODE_EXTENSIONS:
         return _guard(_extract_js_ts_code(
             raw_text,
-            section=validated.section,
+            section=None if force_all else validated.section,
             file_path=validated.file_path,
         ))
 
     content = raw_text
-    if validated.section is not None and validated.section.strip():
-        sec_clean = validated.section.strip()
+    plan_notice: str | None = None
+    if not full_mode:
+        sec_clean = raw_sec
         if sec_clean == "--frontmatter":
             fm = _extract_frontmatter(content)
             if fm is None:
@@ -864,25 +1271,41 @@ def compress_context(
                 return f"ERROR: Geen headings gevonden in '{validated.file_path}'."
             return hd
 
+        lines = content.splitlines()
         queries = [q.strip() for q in sec_clean.split(",") if q.strip()]
-        extracted_sections: list[str] = []
-        for q in queries:
-            sec_block = _extract_markdown_section(content, q)
-            if sec_block is not None:
-                extracted_sections.append(sec_block)
+        raw_ranges: list[tuple[int, int]] = []
+        # Check if the full unsplit section string matches a single heading (e.g. a heading containing a comma)
+        full_rng = _extract_markdown_section_range(lines, sec_clean) if len(queries) > 1 else None
+        if full_rng is not None and all(
+            (_extract_markdown_section_range(lines, q) in (None, full_rng)) for q in queries
+        ):
+            raw_ranges.append(full_rng)
+        else:
+            for q in queries:
+                rng = _extract_markdown_section_range(lines, q)
+                if rng is not None:
+                    raw_ranges.append(rng)
+            if not raw_ranges and full_rng is not None:
+                raw_ranges.append(full_rng)
 
-        if not extracted_sections and len(queries) > 1:
-            single_block = _extract_markdown_section(content, sec_clean)
-            if single_block is not None:
-                extracted_sections.append(single_block)
-
-        if not extracted_sections:
+        merged_ranges = _merge_section_ranges(raw_ranges)
+        if not merged_ranges:
             return f"ERROR: Sectie '{validated.section}' niet gevonden in '{validated.file_path}'."
-        content = "\n\n".join(extracted_sections)
+        extracted_sections = ["\n".join(lines[s:e]) for s, e in merged_ranges]
+        content = "\n".join(extracted_sections)
+    elif not force_all and suffix == ".md":
+        content, plan_notice = _strip_heavy_plan_sections(content)
 
-    return _guard(_compact_markdown_or_text(
-        content, compact_tables=validated.dsv_for_flat_lists
-    ))
+    compacted = _compact_markdown_or_text(
+        content,
+        compact_tables=validated.dsv_for_flat_lists,
+        strip_html_comments=True,
+        section_mode=not full_mode,
+        filter_query=validated.filter_query,
+    )
+    if plan_notice:
+        compacted = f"{compacted}\n{plan_notice}" if compacted else plan_notice
+    return _guard(compacted)
 
 
 if __name__ == "__main__":

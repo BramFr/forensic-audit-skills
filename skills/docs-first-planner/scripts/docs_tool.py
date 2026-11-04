@@ -23,6 +23,10 @@ SKELETON = f"""# Docs index
 ## Product vision
 _Not written down yet. Describe in 3-5 lines what the product is for, who it is for and what it is not._
 
+## Standing constraints
+| ID | Constraint (DO NOT / MUST) | Source |
+| --- | --- | --- |
+
 ## Search keywords
 [term1, term2, term3]
 
@@ -187,6 +191,11 @@ def collect_problems(docs):
         if not m or m.group(1).strip() != table.strip():
             problems.append("docs/index.md is out of sync with the item files (run: docs_tool.py index)")
         text = index.read_text(encoding="utf-8")
+        sc_match = re.search(r"^##\s+Standing constraints\b(.*?)(?=^##\s+|\Z)", text, re.S | re.M | re.I)
+        if sc_match:
+            for ref_id in re.findall(r"\b(?:bugs?|feature|refactor|chore|research|security)/\d{2,}\b", sc_match.group(1)):
+                if ref_id not in all_ids:
+                    problems.append(f"docs/index.md: Standing constraints references unknown item '{ref_id}'")
         if MSTART in text and MEND in text:  # module index is optional: only checked once it exists
             mtable, mwarnings = build_module_table(docs)
             problems.extend(mwarnings)
@@ -205,16 +214,18 @@ def cmd_check(docs):
 
 
 def main():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--docs", default=argparse.SUPPRESS, help="path to the docs folder (default: ./docs)")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--docs", default="docs", help="path to the docs folder (default: ./docs)")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    n = sub.add_parser("next")
+    n = sub.add_parser("next", parents=[common])
     n.add_argument("category")
-    sub.add_parser("index").add_argument("--strict", action="store_true", help="refuse to write when check finds problems")
-    sub.add_parser("check")
-    sub.add_parser("modules")
+    sub.add_parser("index", parents=[common]).add_argument("--strict", action="store_true", help="refuse to write when check finds problems")
+    sub.add_parser("check", parents=[common])
+    sub.add_parser("modules", parents=[common])
     args = ap.parse_args()
-    docs = Path(args.docs)
+    docs = Path(getattr(args, "docs", "docs"))
     if args.cmd not in ("index", "modules") and not docs.is_dir():
         print(f"{docs} does not exist" + (" (next number would be 01)" if args.cmd == "next" else ""))
         if args.cmd == "next":

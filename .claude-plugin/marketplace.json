@@ -5,14 +5,14 @@
     "name": "BramFr"
   },
   "metadata": {
-    "description": "Zero-trust audit skills: verify AI output and crawl-test websites with visual evidence",
+    "description": "Zero-trust audit skills: verify AI output and crawl-test websites with visual evidence, plus a first-principles intake and design engine",
     "version": "1.0.0"
   },
   "plugins": [
     {
       "name": "forensic-audit-skills",
       "source": "./",
-      "description": "Forensic audit of AI output (any domain) and crawl-driven site audit with screenshots"
+      "description": "Forensic audit of AI output (any domain) and crawl-driven site audit with screenshots, plus a first-principles intake and design engine"
     }
   ]
 }

@@ -26,65 +26,52 @@ Never skip the audit steps in COMPACT mode to save time. Shorter output, not sha
 ## Principles
 
 **1. Run in one go, but ask when a missing input changes the verdict.**
-Do not pause mid-audit to ask permission to continue ("shall I proceed to step 2?"). There is one exception: if a missing fact would change the outcome of the audit (jurisdiction, product version, dosage, age, load, tax year), ask ONE concise question before starting instead of guessing. If the gap is minor, state your assumption in one line, continue, and list it under the open points.
+Do not pause mid-audit for permission to continue. Exception: if a missing fact changes the verdict (jurisdiction, product version, dosage, age, load, tax year), ask ONE concise question before starting. For minor gaps, state a 1-line assumption and log it in open points.
 
 **2. Treat every earlier claim as an unproven hypothesis.**
-Claims in the output, and in the earlier conversation, are not evidence. Do not try to please the user: factual, physical and legal correctness matters more than a pleasant answer.
+Earlier claims in the output or conversation are not evidence; factual, physical and legal correctness outweighs a pleasant answer.
 
 **3. Reject fake success.**
-Code that compiles but fails at runtime, or a recipe, text or plan that sounds plausible but fails in practice, is not a pass. A pass needs proof (a calculation, an executed test, a primary source), not just coherence.
+Code that compiles but fails at runtime, or a recipe, text or plan that sounds plausible but fails in practice, is not a pass. A pass requires proof (calculation, executed test, primary source).
 
 **4. Always search for external sources, and report honestly what was found.**
-Searching is mandatory for every one of the 10 audit points, including points you are confident about. Your own knowledge is a starting hypothesis, never the final evidence. Check once, before Phase 1, which tools you actually have in this session (including lazy-loaded MCP servers such as `web-search` / `search_website`, built-in web search, page fetch, code execution, file access). When the `search_website` MCP tool is available (eagerly or via `call_mcp_tool` on server `web-search`), always prefer it over built-in search or fetch tools. **Before running any search (`web-search` / `search_website`), always check first whether `./docs/index.md` exists with a `## Search keywords` section:** if it is present, using 1 to 3 matching keywords from `## Search keywords` per query is mandatory so search results fit the project's domain, scale and stack; if `./docs/index.md` or `## Search keywords` is not present (for example a standalone question outside a project), proceed with the normal search flow.
-
-For every point, track two things: the **source status** and the **method**.
-
-*Source status* (mandatory per point):
+Searching is mandatory for all 10 points; own knowledge is only a hypothesis. Before Phase 1, check available tools (`web-search` / `search_website`, built-in search/fetch, code execution, file access) and prefer `search_website` (`web-search` MCP). Track **source status** and **method** per point:
 
 | Label | Meaning |
 | --- | --- |
-| 🔎 SOURCED | A primary source was opened and read in this session (the actual page, document or standard, not only a search-result summary) |
-| 🔍 SNIPPET | A search was run and the result points to a primary source, but only the search-result summary was seen; the page itself was not opened |
-| ⚠️ NO SOURCE FOUND | A search was run, but no primary source confirming or refuting the claim was found |
-| 🚫 NOT SEARCHED | No search was run for this point (no search tool available, search failed, or skipped). This is a **process failure** and must be flagged as such |
-
-*Method*:
-
-| Label | Meaning |
-| --- | --- |
+| 🔎 SOURCED | Primary source opened and read in this session (page, document or standard, not just a snippet) |
+| 🔍 SNIPPET | Search result points to a primary source, but only the snippet was seen; page not opened |
+| ⚠️ NO SOURCE FOUND | Search ran, but no primary source confirmed or refuted the claim |
+| 🚫 NOT SEARCHED | No search ran (missing tool, failed, or skipped) — **process failure**, must be flagged |
 | ⚙️ EXECUTED | Actually run or calculated with a tool |
-| 🧮 HAND-CALCULATED | Calculated by hand; the calculation is shown |
-| 🧠 REASONED | Based on own knowledge or reasoning, not independently tested |
+| 🧮 HAND-CALCULATED | Calculated by hand; calculation shown |
+| 🧠 REASONED | Based on own knowledge/reasoning, not independently tested |
 
 Rules:
-- Never write that something was searched, opened, executed or measured when it was not. Never present a search-result summary as if you read the primary source.
-- Try to reach 🔎 using a two-step flow: first run `search_website(query_or_url="<query>")` to get DuckDuckGo results (🔍 SNIPPET), then pass the most authoritative primary `http(s)` URL (HTML or PDF) to `search_website(query_or_url="https://...", filter_query="<keywords>")` (or inline `"https://... <keywords>"`) to read the primary source in Markdown (🔎 SOURCED) while keeping outputs under 10 KB. Use 🔍 only when opening is not possible. When an audit requires `>= 8` web searches/scrapes, prefer delegating the web-research batch to a `research`/`self` subagent that returns a compact `#schema:point|status|source|evidence` table.
-- **Project search keywords (`./docs/index.md`) — mandatory check before searching**: whenever `forensic-audit` and `web-search` (`search_website`) are used, always check before Phase 1 whether `./docs/index.md` exists and contains `## Search keywords` (using `compress_context(file_path="docs/index.md", section="Search keywords")` when `mcp/context-compressor` is available instead of reading the entire file).
-  - **Present (and question is about the project or its domain)**: it is required for accurate project-specific information — you MUST select 1 to 3 relevant terms from `## Search keywords` per audit point and include them in the query (`{selected keywords} {point query}`): for architecture, design, UI, workflow, scale or performance queries, pick 1 to 2 of the leading vision/scale priority terms (the first ~5–8 terms in `## Search keywords`); for specific protocol, RFC, W3C or API-spec queries, pick 1 to 2 matching technical domain terms from `## Search keywords` (stripping search-operator punctuation like `+` in the query string). Never dump the entire keyword list into a single query, and **never send 0 keywords from `## Search keywords` when it is present** (a query sent with 0 project keywords counts as `🚫 NOT SEARCHED`).
-  - **Not present or standalone out-of-domain question** (no `./docs/index.md`, no `## Search keywords`, or a standalone consumer/personal question unrelated to the project's domain while the project folder happens to be open): continue normally with the standard search flow (`{point query}`) without injecting project keywords.
-- **Fail-closed on `ERROR:`**: if `search_website(query_or_url="https://...")` (or any fetch tool) returns an `ERROR:` response (HTTP 403, timeout, unextractable JS-only page), it **never** counts as 🔎 SOURCED. Either open a second primary URL from the results, or fall back to 🔍 SNIPPET (or ⚠️ NO SOURCE FOUND) and record the failed URL and reason in the open points.
-- Search in at least two ways before concluding ⚠️ NO SOURCE FOUND (different wording, the language of the relevant jurisdiction, the name of the standard or authority). Record the queries tried.
-- A point with ⚠️ NO SOURCE FOUND or 🚫 NOT SEARCHED can never be ✅ CONFIRMED. Every such point is listed, with the reason, in the open points and in the **Source gaps** line.
-- **No search tool at all**: every point becomes 🚫 NOT SEARCHED. Put this warning at the very top of the report: `⚠️ NO EXTERNAL SOURCES CONSULTED — this audit rests on reasoning only`. For each point, name the primary source the user should check.
-- **No code execution**: do the calculation by hand (🧮). For physical or chemical claims you can only predict, not measure, so say which real-world test would confirm it.
+- Never claim something was searched, opened, executed or measured when it was not, or present a snippet as a read primary source.
+- Reach 🔎 in 1 turn via `search_website(query_or_url="<query>", auto_open_top=1)` (or batch `search_website(queries_or_urls=[...], auto_open_top=1)` / `"open: <query>"` up to 10 items/call with SQLite WAL + `ETag` caching and session-delta block re-slicing in a `<= 9.500 B` batch budget) for DuckDuckGo snippets (🔍) + auto-opened top primary URL (🔎), keeping queries concise (**4–6 core terms** + 1–2 index keywords; one language and one standard/concept per query); or pass an `http(s)` URL (HTML/PDF) with `filter_query="<keywords>"` (or `"https://... <keywords>"` on long catalogs/PDFs for `<= 10.240 B` inline) to read Markdown (🔎). Use 🔍 only when opening fails. For `>= 8` searches/scrapes (or combined 7 D1–D7 + 10 P1–P10 searches), prefer delegating the batch (**Batch Prompting**, `arXiv:2511.04108`, no hard token caps) to a `research`/`self` subagent under a **Difficulty-Adaptive Budget (DAST)**: concise *Chain-of-Draft (CoD)* density for D1–D7 and deep reasoning for P1–P10 and Step 2B disconfirmation, followed by a **Zero-Trust Context-Purge** returning `#schema:` tables (`#schema:dimension|criterion|threshold|source`, `#schema:point|status|source|evidence`).
+- **Project search keywords (`./docs/index.md`) — mandatory check**: check `./docs/index.md` via `compress_context(file_path="docs/index.md", section="Search keywords")` before Phase 1.
+  - **Present (in project/domain)**: include 1–3 matching terms from `## Search keywords` per query (`{selected keywords} {point query}`): 1–2 leading vision/scale terms (first ~5–8 terms) for architecture/design/UI/workflow/scale queries, or 1–2 **technical/methodological domain terms** (`primary-source-verification`, `ISO-NEN-IEC`, `IETF-RFC`, `NIST-SP-800`, `OWASP-ASVS`, `Python-stdlib`, stripping `+`) for external protocol/standard/RFC/library/scientific queries—never prepend abstract vision terms (`zero-trust`, `no-fake-green`) to external standard queries, never dump the full list, and **never send 0 keywords when present** (`0 keywords = 🚫 NOT SEARCHED`).
+  - **Absent or out-of-domain standalone question**: search normally (`{point query}`) without project keywords.
+- **Fail-closed on `ERROR:`**: an `ERROR:` response (HTTP 403, timeout, JS wall) **never** counts as 🔎 SOURCED; try another primary URL or fall back to 🔍 / ⚠️ and log the failed URL in open points. Try >= 2 distinct queries before concluding ⚠️ NO SOURCE FOUND and log queries tried. ⚠️ or 🚫 points can never be ✅ CONFIRMED; list each in open points and **Source gaps**.
+- **No search tool**: mark all points 🚫 NOT SEARCHED, put `⚠️ NO EXTERNAL SOURCES CONSULTED — this audit rests on reasoning only` at the top, and name the primary source per point. **No code execution**: calculate by hand (🧮) and name the confirming real-world test.
 
-**5. Keep the report compact, but never at the expense of honesty.**
-Compactness never applies to warnings, source gaps, open points or a DO NOT USE verdict. These always appear, even in COMPACT mode.
+**5. Keep the report compact, never at the expense of honesty.**
+Warnings, source gaps, open points and `DO NOT USE` verdicts always appear in full, even in COMPACT mode.
 
 **6. When something goes wrong, diagnose before you fix.**
-If the input contains or describes a failure (any error, log, failed test, rejected result, or physical, chemical, biological or procedural failure), do not only judge it: find the cause from live primary sources and give a verified fix. Works in any domain; follow these seven steps in this order:
-1. **Discover.** Derive the domain, specific subject (product, material, species, language, protocol, make/model/version) and jurisdiction from the request and project files, and check whether `./docs/index.md` has `## Search keywords` (if present, include 1-3 fitting keywords in your search queries; if absent, search normally). If a missing fact would change the cause or standard, ask ONE concise question (Principle 1); otherwise state your assumption in one line. Then search live (`search_website` preferred: search first, then open the primary URL for 🔎 SOURCED) for both the meaning of the failure signal and the governing standard, using this universal source hierarchy: (a) law and formal standards (EU/national law, ISO, NEN, IEC, EN, UNECE, IETF RFC), (b) regulators and public authorities (such as NIST, NCSC, NVWA, RDW, NHG, EMA, OSHA), (c) primary manufacturer, specification or framework documentation (official manuals, datasheets, error tables, release notes), (d) accredited guild/trade guidelines and peer-reviewed science. **Two-step rule for paid standards (ISO/NEN/IEC):** always name the formal standard (identifier + title) AND, when its full text is paywalled, search and open its free **open primary counterpart** (the law or regulation referencing it, regulator guidance, public standard such as NIST/UNECE/OWASP, or official manufacturer datasheet) to reach 🔎 SOURCED.
-2. **Quote.** Copy the failure signal verbatim (mask secrets). The signal is evidence; your explanation of it is a hypothesis.
-3. **Signal.** Identify the decisive signal: the first observable deviation at the point where it originates, not the final symptom or wrapper message that followed.
-4. **Guard.** Check against the primary source whether the failure is a deliberate guard (validation, safety interlock, type approval, normative limit, or rule of the craft). If so, the fix is to satisfy the guard, never to remove, loosen or bypass it.
-5. **Hypotheses.** List at most 3 candidate causes, each with a cheap test (an inspection, measurement, lookup, command or controlled trial). Run the test where you can; otherwise name the exact test the user should run. Do not guess.
-6. **Fix.** Give the concrete fix aligned with the primary source and say what it changes. If it requires a secret, personal credential or irreversible action, state what the user must do themselves; never ask them to paste secrets.
-7. **Confirm.** State how to verify against the standard or baseline that the original failure is gone and that any guard still rejects invalid input or conditions.
+For any failure (error, log, failed test, or physical/chemical/biological/procedural failure), find the cause from live primary sources and give a verified fix in 7 steps:
+1. **Discover.** Derive domain, subject (product, material, species, language, protocol, version) and jurisdiction; check `./docs/index.md` for `## Search keywords` (1–3 keywords when in-domain). Ask ONE concise question if a missing fact changes the cause/standard (Principle 1); else state a 1-line assumption. Search live (`search_website` -> open primary URL for 🔎) for the failure signal and standard using: (a) law/formal standards (EU/national law, ISO, NEN, IEC, EN, UNECE, IETF RFC), (b) regulators/authorities (NIST, NCSC, NVWA, RDW, NHG, EMA, OSHA), (c) primary manufacturer/spec/framework docs (manuals, datasheets, error tables, release notes), (d) accredited guild guidelines and peer-reviewed science. **Two-step rule for paid standards (ISO/NEN/IEC):** name the formal standard (ID + title) AND open its free **open primary counterpart** (referencing law, regulator guidance, NIST/UNECE/OWASP, or datasheet) for 🔎 SOURCED.
+2. **Quote.** Copy the failure signal verbatim (mask secrets); the signal is evidence, your explanation is a hypothesis.
+3. **Signal.** Pinpoint the first observable deviation where it originates, not downstream wrapper symptoms.
+4. **Guard.** Check the primary source for whether the failure is a deliberate guard (validation, safety interlock, type approval, normative limit). Satisfy the guard—never remove, loosen or bypass it.
+5. **Hypotheses.** List <= 3 candidate causes with a cheap test each (inspection, measurement, lookup, command, trial); run it or name the exact user test.
+6. **Fix.** Give the concrete fix aligned with the primary source and state what it changes (never ask for secrets).
+7. **Confirm.** Verify against the standard/baseline that the failure is gone and guards still reject invalid inputs.
+If a wrong diagnosis/fix could cause injury, illness, animal harm, fire, structural/environmental damage, legal breach, major financial loss or irreversible harm, stop and have a qualified professional (named from the standard/authority) perform or sign off the work, with hypotheses only as background.
 
-Assess consequence severity dynamically: whenever a wrong diagnosis or fix could cause physical injury, illness, animal harm, fire, structural or environmental damage, legal breach, major financial loss or irreversible harm, the fix is "stop and have a qualified professional (named from the governing standard or authority) perform or sign off the work"; give the hypotheses only as background.
-
-**7. Code-Subagent Isolation & Lossless Context Pack.**
-Use `compress_context` (`mcp/context-compressor`) across all phases to prevent context bloat: (1) **Phase 1 Progressive Reading** (`section="--frontmatter"`, `section="--headings"`, or multi-section `section="Why,Scope"` on `.md` docs), (2) **Phase 2 Code/Config Audit** (`section="--signatures"` or `section="func1,func2"` on `.py`/`.ts`/`.js`, `section="key"` on `.json`/`.yaml`/`.toml`, and when auditing `>= 3` source files in depth, spawn a read-only `research` subagent with a compressed Context Pack that reports back in `#schema:point|status|file_line|evidence`), and (3) **Phase 4/5 Code-Subagent Isolation**: whenever a repair or implementation step writes or modifies code in files (even a single line), delegate the code edit to a clean code-subagent (`invoke_subagent` / `Agent` tool) with a lossless **Subagent Context Pack** prepared via `compress_context` (`--signatures` + target functions + scoped `.md` section / `MODULE.md`, Pipe-DSV `#schema:` for `N >= 2` flat rows/tables, or `JSON_COMPACT` for nested/sparse data; never use lossy word-pruning, and never run parallel subagents editing the same file).
+**7. Execution-Subagent Isolation & Lossless Context Pack.**
+Use `compress_context` (`mcp/context-compressor`) in all phases: (1) **Phase 1 & Skill Progressive Reading** (`filter_query="<keywords>"` on `docs/index.md` for tiered `#schema:` projection; default **slim plan-read** on `docs/<cat>/NN-slug.md` keeping 2-col `Decisions` + `Scope (Out)` and omitting heavy sections unless `section="Scope,Approach,Acceptance criteria"` or `--all`; section-scoping on `SKILL.md`/references like `section="Principles,Pre-build use (principles research)"`), (2) **Phase 2 Subject/File Audit** (`section="--signatures"` or `section="func1,func2"` on `.py`/`.ts`/`.js`, `section="key"` on `.json`/`.yaml`/`.toml`, delegating a read-only `research` subagent returning `#schema:point|status|file_line|evidence` on `>= 3` files), and (3) **Phase 4/5 Execution-Subagent Isolation**: delegate any file/deliverable edit to a fresh execution subagent (`invoke_subagent` / `Agent`) with a lossless `compress_context` **Subagent Context Pack** (`--signatures` + target sections/symbols + `MODULE.md`, Pipe-DSV `#schema:` for `N >= 2` flat rows/tables, or `JSON_COMPACT`; no lossy word-pruning or parallel same-file edits).
 
 ---
 
@@ -111,7 +98,7 @@ Work through the 10 points in order. Do the five steps internally for each point
 
 **Step 3: Primary source check (mandatory for every point).** Pick the authority type that fits: *Legal/Normative* (ISO/NEN, building codes, EU law, HACCP), *Technical* (datasheets, API docs, RFCs, release notes), *Scientific* (peer-reviewed work), *Trade/Guild* or *Safety/Audit* (NIST, OWASP, food-safety and public-health bodies). Search for the latest version of the standard or guideline, preferring the authority of the relevant jurisdiction (if `./docs/index.md` with `## Search keywords` is present, include 1-3 matching keywords in the query; if absent, search normally), and then open the primary URL to verify the actual text. Use primary sources only; marketing blogs, forums, shops and SEO content do not count as a source (they may at most point you to one). Note source + identifier or URL + source status label.
 
-**Step 4: Red-team.** Try to disprove the point, using the archetype that fits: *Edge-case stress test*, *Ageing and deprecation* (withdrawn standards, deprecated APIs), *Silent failures and side effects*, *Adversarial abuse* (operator error, environment, safety) or *Efficiency falsification*. Compare BEFORE and AFTER with the sources from Step 3.
+**Step 4: Red-team & Step 2B Adversarial Disconfirmation.** Try to disprove the point, using the archetype that fits: *Edge-case stress test*, *Ageing and deprecation* (**Step 2B Adversarial Disconfirmation**: actively search whether the standard, rule, API or method has been withdrawn, deprecated, superseded or refuted, and verify: (a) *Existence at time horizon $t$*, (b) *Typology* — strict binding outcome obligation vs. flexible guideline, and (c) *Higher authority* — whether overruled by a higher jurisdiction or spec), *Silent failures and side effects*, *Adversarial abuse* (operator error, environment, safety) or *Efficiency falsification* (applying the **Simplicity Ladder**: YAGNI -> DRY -> Stdlib/Built-in -> Native -> Existing Dependencies -> Minimal Code + LBYL). Compare BEFORE and AFTER with the sources from Step 3.
 
 **Step 5: Decide.**
 - *No deviation*: assign a status (below) and continue.
@@ -133,6 +120,16 @@ Work through the 10 points in order. Do the five steps internally for each point
 
 | # | Type | BEFORE | AFTER | Source (+ status) | Red-team | Method | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+
+---
+
+## Pre-build use (principles research)
+
+When `first-principles-architect` or `docs-first-planner` calls this skill before building, the audit subject is the **request**: *which principles, standards and quality criteria must a result of this kind satisfy, and where do such results usually fail?*
+
+- Select 10 concrete claims, components, parameters and edge-case failure points of the request: 5 High-Impact (ignoring them fails its purpose/audience) and 5 High-Uncertainty (blind assumptions, outdated rules of thumb, disputed guidance). **Orthogonal to D1–D7:** Phase 1.5 runs 7 system-layer searches (D1–D7), while P1–P10 test 10 concrete claims/components/edge cases—producing **17 unique queries** without repeating D1–D7.
+- Search each point live with concise 4–6 core-term queries (`search_website(queries_or_urls=[...], auto_open_top=1)`) and open primary sources in full (Principles 4 & 6 apply; delegatable with D1–D7 to a `research`/`self` subagent returning `#schema:` tables). Check authoritative examples and failure patterns without copying examples into the result.
+- Report a **criteria register** with **Control Point 1 (2 pros and 2 cons from subject to solution)**: `dimension_or_subtopic | criterion | 2 pros & 2 cons (from subject to solution) | measurable threshold or test | source + status label` across the 3–6 sub-topics and 4 lifecycle safeguards (**Control Point 2** checks 2 pros and 2 cons from subject to solution in intake options, decisions and the pre-delivery/plan check). Unsourced thresholds stay unverified; confidence follows the source label alone (🔎/⚙️ supported; 🔍/⚠️/🚫 open). Keep the register, source gaps and negative declaration compact (wrap long tables in `<details><summary>...</summary></details>`).
 
 ---
 

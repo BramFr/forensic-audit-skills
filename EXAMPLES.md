@@ -111,3 +111,66 @@ The skill reads this block as **parameters**. Page routes, field names and butto
 | 3 | Automotive / Mechanical | Ask or derive make/model/VIN; open UNECE Regulation R90 (free full PDF on `unece.org`) and RDW APK handbook (`apk-handboek.rdw.nl`) | Quote symptom (part does not fit / squeals, or diagnostic trouble code). Guard: type approval (ECE R90) and braking safety — never modify a friction part to make it fit | Check OEM/VIN part number and ECE R90 marking; for a trouble code, run the manufacturer's diagnostic swap test. High consequence: stop and have a qualified mechanic fit and test |
 | 4 | Animal / Veterinary | Derive species, age and behaviour cue; search veterinary and behaviour guidelines (KNMvD / LICG / peer-reviewed veterinary literature) | Quote behaviour; decisive signal is the pain indicator (whining when touched on the back), not ignoring the cue. Guard: animal welfare and pain exclusion before training | Rule out physical pain first. High consequence (animal in pain): stop training and refer to a veterinarian; only test training variables (distraction, reward timing) after medical clearance |
 | 5 | Electrical / Appliance | Derive appliance brand/model and error code; open official manufacturer service/error documentation and electrical safety rules (`wetten.overheid.nl` Bbl / Arbobesluit as open counterpart to NEN 1010 / NEN 3140) | Quote displayed code and symptom; decisive signal is the drain failure + live mains hazard. Guard: de-energise (pull the plug) before touching internal components | After unplugging, inspect filter and hose per manufacturer manual; if the fault is in wiring or internal pump assembly, refer to a certified technician. Confirm: test drain cycle with zero error code |
+
+---
+
+## 7. First-Principles Intake Before You Build (domain-neutral)
+
+> **Illustration of the method only.** `[subject]` and `[parameter]` stand for whatever the request is about. On every run the agent derives the real subject, vocabulary and numbers from the request and from live sources, and never copies them from an example.
+
+**Request:** "Help me design (or tune, or set up) `[subject]`."
+
+❌ **Straight from the wish**
+```
+Plan: step 1 ... step 12.
+[parameter] was guessed, the hard limits were never asked, and the effect on [another part of the system] went unnoticed.
+```
+
+✅ **Intake first, delivery later**
+```
+D1 Baseline      known    current state taken from what you supplied
+D2 Target        assumed  "better" is not measurable yet
+D3 Constraints   missing  limit that decides everything: asked
+D4 Failure modes missing  what breaks if the assumption is wrong: asked
+D5-D7            known    side effects, budget and undo path mapped
+
+Questions (3): each with a recommended answer first, or "tell me to decide".
+Gate A  chosen mode needs sub-parameter [Y], not supported by the layer below
+        -> research loop, matrix repaired from that point, then deliver.
+Gate B  numbered list of quality upgrades you did not know to ask for -> you pick.
+```
+
+❌ **Deliverable with scaffolding**: step labels, internal parameter dumps and extra captions that nobody asked for.
+
+✅ **Clean deliverable**: only the supplied or approved content; open points and assumptions sit in a short note around it.
+
+---
+
+## 8. Principles Research Before Building (domain-neutral)
+
+> **Illustration of the method only.** Every `[...]` stands for something the agent must look up on every run with live sources. The agent never copies thresholds, rules of thumb or examples from here or from memory.
+
+**Request:** "Make me `[a deliverable of some kind]` for `[an audience]`."
+
+❌ **Built from the wish and from memory**
+```
+Result is complete, but nobody asked what a good [deliverable] must satisfy:
+too much content per unit, details too small for the audience, nothing measured.
+```
+
+✅ **Seven dimensions researched first, then the forensic audit, then build, then measure**
+```
+Phase 0 (or phase 1.5 in docs-first-planner): at least one live search per dimension
+  D1 baseline      [what must be known about the starting point]      | [source] 🔎
+  D2 target        [success criteria and standards, how measured]     | [source] 🔎
+  D3 constraints   [limits and their values]                          | [source] 🔎
+  D4 failure modes [where such results usually fail]                  | [source] 🔎
+  D5 dynamics      [side effects of one choice elsewhere]             | [source] 🔎
+  D6 budget        [normal effort or capacity, what drives it]        | unverified 🔍
+  D7 reversibility [one-way steps, safe order, undo]                  | [source] 🔎
+Forensic audit supplements: extra criteria, authoritative examples, weak sources challenged
+Build    intake, analysis and delivery use the register as evidence
+Check    the result is measured against every criterion before delivery;
+         a miss goes back for repair; the register stays internal
+Note     one short note around the result: criteria met (🔎/⚙️), open points, source gaps
+```

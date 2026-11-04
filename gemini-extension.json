@@ -1,6 +1,6 @@
 {
   "name": "forensic-audit-skills",
   "version": "1.0.0",
-  "description": "Zero-trust audit skills: forensic verification of AI output in any domain, and a crawl-driven, zero-hardcode end-to-end site audit with visual evidence",
+  "description": "Zero-trust audit skills: forensic verification of AI output in any domain, and a crawl-driven, zero-hardcode end-to-end site audit with visual evidence, plus a domain-neutral first-principles intake and design engine",
   "contextFileName": "GEMINI.md"
 }

@@ -482,7 +482,6 @@ addopts = "-q"
     assert "# Full line comment" not in out_toml
 
 
-
 # --- feature/10: structured output, reversible link compaction (L3), never-larger guard (L4) ---
 
 import asyncio  # noqa: E402
@@ -607,6 +606,7 @@ def test_alias_choices_path_and_root_and_opposite_unknown_rejected(tmp_path: Pat
                 "section",
                 "dsv_for_flat_lists",
                 "workspace_root",
+                "filter_query",
             }
 
             r1 = await client.call_tool(
@@ -634,3 +634,407 @@ def test_alias_choices_path_and_root_and_opposite_unknown_rejected(tmp_path: Pat
                 await client.call_tool("compress_context", {"path": "   "})
 
     asyncio.run(_run())
+
+
+def test_feature18_signatures_field_description_ellipsis_and_opposite_symbol_verbatim(tmp_path: Path):
+    """feature/18: --signatures replaces Field(..., description='< >20 chars >') in arg annotations with description=..., while keeping short descriptions, AliasChoices, defaults, first docstring line, and full symbol extraction verbatim (opposite test)."""
+    py_file = tmp_path / "tool_mod.py"
+    py_file.write_text(
+        '''from typing import Annotated
+from pydantic import AliasChoices, Field
+
+
+def sample_tool(
+    query_or_url: Annotated[
+        str,
+        Field(
+            default="",
+            validation_alias=AliasChoices("query_or_url", "query"),
+            description="Very long tool argument description that exceeds twenty characters easily.",
+        ),
+    ] = "",
+    short_arg: Annotated[
+        int,
+        Field(default=5, description="Short desc"),
+    ] = 5,
+) -> str:
+    """First docstring line stays intact."""
+    return query_or_url
+''',
+        encoding="utf-8",
+    )
+
+    sig_out = compress_context(
+        file_path="tool_mod.py",
+        section="--signatures",
+        workspace_root=str(tmp_path),
+    )
+    assert "description=..." in sig_out
+    assert "Very long tool argument description" not in sig_out
+    assert "AliasChoices('query_or_url', 'query')" in sig_out
+    assert "description='Short desc'" in sig_out
+    assert "# First docstring line stays intact." in sig_out
+
+    # Opposite test: explicit symbol extraction keeps full Field description verbatim
+    sym_out = compress_context(
+        file_path="tool_mod.py",
+        section="sample_tool",
+        workspace_root=str(tmp_path),
+    )
+    assert "Very long tool argument description that exceeds twenty characters easily." in sym_out
+
+
+def test_feature18_strip_html_comments_outside_fences_and_preserve_inside_fences(tmp_path: Path):
+    """feature/18: Full-line HTML comments outside fences/frontmatter are stripped and Tags commas compacted, while comments inside fences/frontmatter remain intact (opposite test)."""
+    md_file = tmp_path / "index_sample.md"
+    md_file.write_text(
+        """---
+note: <!-- keep frontmatter comment -->
+---
+# Docs index
+
+## Items
+<!-- INDEX:START -->
+| ID | Status | Tags |
+| --- | --- | --- |
+| [bugs/01](bugs/01-fix.md) | done | mcp, web-search, bugfix |
+| [feature/18](feature/18-bench.md) | in-progress | mcp, token-efficiency, dry |
+<!-- INDEX:END -->
+
+```html
+<!-- keep fenced comment -->
+```
+""",
+        encoding="utf-8",
+    )
+    out = compress_context(
+        file_path="index_sample.md",
+        section="Items",
+        workspace_root=str(tmp_path),
+    )
+    assert "<!-- INDEX:START -->" not in out
+    assert "<!-- INDEX:END -->" not in out
+    assert "bugs/01-fix.md|done|mcp,web-search,bugfix" in out
+    assert "feature/18-bench.md|in-progress|mcp,token-efficiency,dry" in out
+
+    full_out = compress_context(
+        file_path="index_sample.md",
+        workspace_root=str(tmp_path),
+    )
+    assert "note: <!-- keep frontmatter comment -->" in full_out
+    assert "<!-- keep fenced comment -->" in full_out
+    assert "<!-- INDEX:START -->" not in full_out
+
+
+def test_feature19_tiered_table_filter_query_and_index_budget(tmp_path: Path):
+    """feature/19: filter_query projects non-matching rows in >=4-col tables to first 3 cols while keeping full 5 cols for matching rows and leaving non-table sections untouched; repo docs/index.md stays <= 10,240 B."""
+    idx_file = tmp_path / "index.md"
+    idx_file.write_text(
+        """# Docs index
+
+## Product vision
+Zero-trust verification engine.
+
+## Search keywords
+[zero-trust, forensic-audit, sqlite-wal, rfc-9111]
+
+## Items
+| ID | Status | Title | Summary | Tags |
+| --- | --- | --- | --- | --- |
+| [bugs/01](bugs/01-fix.md) | done | Fix search keywords | Long unrelated summary about search keywords in tool schema | planner, bugfix |
+| [feature/19](feature/19-sqlite.md) | in-progress | SQLite WAL cache & slim plan | Persistent sqlite3 WAL cache with RFC 9111 ETag revalidation | mcp, sqlite-wal, rfc-9111 |
+""",
+        encoding="utf-8",
+    )
+    filtered = compress_context(
+        file_path="index.md",
+        section="Product vision,Search keywords,Items",
+        filter_query="sqlite wal",
+        workspace_root=str(tmp_path),
+    )
+    assert "Zero-trust verification engine." in filtered
+    assert "[zero-trust,forensic-audit,sqlite-wal,rfc-9111]" in filtered
+    # Non-matching row projected to first 3 columns (ID|Status|Title)
+    assert "bugs/01|done|Fix search keywords\n" in filtered
+    assert "Long unrelated summary" not in filtered
+    # Matching row retains all 5 columns
+    assert (
+        "feature/19|in-progress|SQLite WAL cache & slim plan|"
+        "Persistent sqlite3 WAL cache with RFC 9111 ETag revalidation|mcp,sqlite-wal,rfc-9111"
+        in filtered
+    )
+
+    # Repo docs/index.md 4-section budget check without filter_query must stay <= 10,240 B
+    repo_root = Path(__file__).resolve().parents[3]
+    repo_index = compress_context(
+        file_path="docs/index.md",
+        section="Product vision,Search keywords,Items,Modules",
+        workspace_root=str(repo_root),
+    )
+    assert len(repo_index.encode("utf-8")) <= 10240
+
+
+def test_feature19_slim_plan_read_by_default_and_opposite_non_plan_or_all_intact(tmp_path: Path):
+    """feature/19: Reading a plan .md file with section=None automatically omits Starting point, Decisions, Scope, Approach, Acceptance criteria & Verification while keeping frontmatter, Why, Risks and Relations; section='Scope,Acceptance criteria' or section='--all' returns them in full, and non-plan .md files stay untouched (opposite test)."""
+    plan_file = tmp_path / "19-sample-plan.md"
+    plan_file.write_text(
+        """---
+id: feature/19
+title: Sample Plan
+category: feature
+status: in-progress
+summary: Slim plan read test
+---
+
+# Sample Plan
+
+## Why
+Eliminate 88% token bloat on full plan reads.
+
+## Starting point (audit findings)
+Heavy audit details that should be omitted on default section=None read.
+
+## Decisions
+Heavy grill table that should be omitted on default read.
+
+## Scope
+In scope: context-compressor and web-search.
+
+## Approach
+Step 1, Step 2, Step 3.
+
+## Acceptance criteria
+- [ ] All tests pass.
+
+## Verification
+Verified via pytest.
+
+## Risks and open points
+On-demand section loading remains 100% lossless.
+
+## Relations
+Related to feature/18.
+""",
+        encoding="utf-8",
+    )
+
+    slim_out = compress_context(
+        file_path="19-sample-plan.md",
+        workspace_root=str(tmp_path),
+    )
+    assert "id: feature/19" in slim_out
+    assert "## Why\nEliminate 88% token bloat on full plan reads." in slim_out
+    assert "## Risks and open points\nOn-demand section loading remains 100% lossless." in slim_out
+    assert "## Relations\nRelated to feature/18." in slim_out
+    assert "Heavy audit details" not in slim_out
+    assert "Heavy grill table" not in slim_out
+    assert "In scope: context-compressor" not in slim_out
+    assert "Step 1, Step 2, Step 3." not in slim_out
+    assert "All tests pass." not in slim_out
+    assert "Verified via pytest." not in slim_out
+    assert "<!-- Omitted plan sections" in slim_out
+
+    # Explicit section extraction returns requested heavy sections in full
+    scoped_out = compress_context(
+        file_path="19-sample-plan.md",
+        section="Scope,Acceptance criteria",
+        workspace_root=str(tmp_path),
+    )
+    assert "In scope: context-compressor and web-search." in scoped_out
+    assert "- [ ] All tests pass." in scoped_out
+
+    # section="--all" returns all sections in full
+    all_out = compress_context(
+        file_path="19-sample-plan.md",
+        section="--all",
+        workspace_root=str(tmp_path),
+    )
+    assert "Heavy audit details" in all_out
+    assert "In scope: context-compressor and web-search." in all_out
+    assert "- [ ] All tests pass." in all_out
+    assert "<!-- Omitted plan sections" not in all_out
+
+    # Opposite test: non-plan .md file with section="Scope" heading keeps everything when section=None
+    regular_md = tmp_path / "SKILL.md"
+    regular_md.write_text(
+        """---
+name: sample-skill
+description: Not a plan document
+---
+# Skill Guide
+
+## Scope
+This Scope section in a non-plan file must never be omitted!
+
+## Approach
+This Approach section in a non-plan file must also stay intact!
+""",
+        encoding="utf-8",
+    )
+    reg_out = compress_context(
+        file_path="SKILL.md",
+        workspace_root=str(tmp_path),
+    )
+    assert "This Scope section in a non-plan file must never be omitted!" in reg_out
+    assert "This Approach section in a non-plan file must also stay intact!" in reg_out
+    assert "<!-- Omitted plan sections" not in reg_out
+
+
+def test_bugs06_slim_plan_keeps_2col_decisions_and_scope_out(tmp_path: Path):
+    """bugs/06: Default slim plan-read (section=None) keeps 2-column Decisions (Question | Decision without Reason) and Scope (Out) while omitting Scope (In), Starting point, Approach, Acceptance criteria & Verification."""
+    plan_file = tmp_path / "06-commitments-plan.md"
+    plan_file.write_text(
+        """---
+id: bugs/06
+title: Commitment Preservation Plan
+category: bugs
+status: in-progress
+summary: Keep Decisions and Scope Out in slim plan reads
+---
+
+# Commitment Preservation Plan
+
+## Why
+Prevent re-proposing rejected patterns like mouse 3D tilt.
+
+## Starting point (audit findings)
+Heavy audit findings that should be omitted in slim mode.
+
+## Decisions (from the grill)
+| Question | Decision | Reason (incl. 2 pros & 2 cons) |
+| --- | --- | --- |
+| 1. Mouse 3D tilt? | **0% mouse influence (Keyboard-Only)** | +Pro 1: Zero style invalidation. +Pro 2: No motion sickness. -Con 1: None. -Con 2: None. |
+| 2. Frame rotation? | **0deg upright frames** | +Pro 1: Maximum legibility at 5m. +Pro 2: Full 2x2 stage fill. -Con 1: None. -Con 2: None. |
+
+## Scope
+- **In**:
+  - Update context-compressor and planner skill.
+- **Out (explicitly not doing)**:
+  - No mousemove 3D tilt or wheel scroll in presentation slides.
+  - No -16deg frame rotation during reading.
+
+## Approach
+1. Step 1
+2. Step 2
+
+## Acceptance criteria
+- [ ] All checks pass.
+""",
+        encoding="utf-8",
+    )
+
+    slim_out = compress_context(
+        file_path="06-commitments-plan.md",
+        workspace_root=str(tmp_path),
+    )
+    assert "## Decisions" in slim_out
+    assert "1. Mouse 3D tilt?" in slim_out
+    assert "**0% mouse influence (Keyboard-Only)**" in slim_out
+    assert "2. Frame rotation?" in slim_out
+    assert "**0deg upright frames**" in slim_out
+    assert "Zero style invalidation" not in slim_out
+    assert "No motion sickness" not in slim_out
+
+    assert "## Scope" in slim_out
+    assert "- **Out (explicitly not doing)**:" in slim_out
+    assert "No mousemove 3D tilt or wheel scroll in presentation slides." in slim_out
+    assert "No -16deg frame rotation during reading." in slim_out
+    assert "Update context-compressor and planner skill." not in slim_out
+    assert "Decisions (Reason)" in slim_out
+    assert "Scope (In)" in slim_out
+
+    # Explicit section="Decisions,Scope" and section="--all" still return 100% of Reason and In items
+    full_sec = compress_context(
+        file_path="06-commitments-plan.md",
+        section="Decisions,Scope",
+        workspace_root=str(tmp_path),
+    )
+    assert "Zero style invalidation" in full_sec
+    assert "Update context-compressor and planner skill." in full_sec
+
+    full_all = compress_context(
+        file_path="06-commitments-plan.md",
+        section="--all",
+        workspace_root=str(tmp_path),
+    )
+    assert "Zero style invalidation" in full_all
+    assert "Update context-compressor and planner skill." in full_all
+    assert "Heavy audit findings" in full_all
+
+
+def test_feature20_exact_vs_substring_heading_priority_and_range_deduplication(tmp_path: Path):
+    """feature/20: Exact/prefix heading match takes priority over substring match, comma-containing headings and overlapping/nested multi-section ranges are deduplicated, and repo skill section reads stay <= 10,240 B."""
+    doc = tmp_path / "skill_sample.md"
+    doc.write_text(
+        """# First-Principles Architect
+
+Intro under top-level H1 that contains the substring 'Principles' in its title.
+
+## Phase 0: Principles research (always, whatever the request)
+
+Phase 0 normative instructions line 1.
+
+### Sub-step inside Phase 0
+
+Nested sub-step line 2.
+
+## Principles
+
+Exact H2 Principles section body.
+""",
+        encoding="utf-8",
+    )
+
+    # 1. Exact heading match priority: 'Principles' matches '## Principles', NOT '# First-Principles Architect'
+    out_exact = compress_context(
+        file_path="skill_sample.md",
+        section="Principles",
+        workspace_root=str(tmp_path),
+    )
+    assert "## Principles" in out_exact
+    assert "Exact H2 Principles section body." in out_exact
+    assert "# First-Principles Architect" not in out_exact
+    assert "Intro under top-level H1" not in out_exact
+
+    # 2. Heading containing a comma is not duplicated when split by ','
+    out_comma = compress_context(
+        file_path="skill_sample.md",
+        section="Phase 0: Principles research (always, whatever the request)",
+        workspace_root=str(tmp_path),
+    )
+    assert out_comma.count("## Phase 0: Principles research (always, whatever the request)") == 1
+    assert out_comma.count("Phase 0 normative instructions line 1.") == 1
+
+    # 3. Overlapping / nested sections ('Phase 0, Sub-step inside Phase 0') are merged without duplicate lines
+    out_nested = compress_context(
+        file_path="skill_sample.md",
+        section="Phase 0,Sub-step inside Phase 0",
+        workspace_root=str(tmp_path),
+    )
+    assert out_nested.count("Nested sub-step line 2.") == 1
+    assert "## Principles" not in out_nested
+
+    # 4. Opposite check: substring fallback still works when no exact/prefix match exists
+    out_sub = compress_context(
+        file_path="skill_sample.md",
+        section="whatever the request",
+        workspace_root=str(tmp_path),
+    )
+    assert "## Phase 0: Principles research (always, whatever the request)" in out_sub
+
+    # 5. Repo skill section reads stay strictly <= 10,240 B
+    repo_root = Path(__file__).resolve().parents[3]
+    fa_sec = compress_context(
+        file_path="skills/forensic-audit/SKILL.md",
+        section="Principles,Pre-build use (principles research)",
+        workspace_root=str(repo_root),
+    )
+    fpa_sec = compress_context(
+        file_path="skills/first-principles-architect/SKILL.md",
+        section="Phase 0: Principles research (always, whatever the request)",
+        workspace_root=str(repo_root),
+    )
+    assert len(fa_sec.encode("utf-8")) <= 10240
+    assert len(fpa_sec.encode("utf-8")) <= 10240
+    assert fpa_sec.count("## Phase 0: Principles research (always, whatever the request)") == 1
+

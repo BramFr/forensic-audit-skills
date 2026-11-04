@@ -7,7 +7,7 @@ summary: output_schema=None in beide MCP-servers, [ID](ID-slug.md)->pad in compr
 tags: [mcp, context-compressor, web-search, token-efficiency, lossless, structured-content, benchmark]
 created: 2026-10-29
 updated: 2026-10-29
-related: [feature/06, feature/08, feature/09]
+related: [feature/06, feature/08, feature/09, feature/20]
 ---
 
 # Lossless token-fixes in context-compressor en web-search (enkel tekst-transport, link-compactie, nooit-groter-guard)

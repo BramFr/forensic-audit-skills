@@ -2,6 +2,9 @@
 
 Use this structure for every item saved to `./docs/<category>/NN-slug.md`. Write the content in the user's language. Keep the frontmatter exactly as shown, because `scripts/docs_tool.py` builds the index from it. `summary` and `tags` are what is read first (see progressive reading in `SKILL.md`), so make them specific.
 
+- **Slim Plan-Read (`compress_context`):** An unfiltered `compress_context(file_path="docs/<category>/NN-slug.md")` call automatically returns a **slim plan-read** (frontmatter + `## Why` + 2-column `## Decisions` (`Question | Decision`) + `## Scope (Out)` + `## Risks and open points` + `## Relations`, omitting the heavy sections `## Starting point`, `Decisions (Reason)`, `Scope (In)`, `## Approach`, `## Acceptance criteria`, and `## Verification`). Load heavy sections on demand via `section="Decisions,Scope,Approach,Acceptance criteria"` or `section="--all"`.
+- **Slim Phase-4 Chat Presentation:** In Phase 4 (before user approval), show only the concise plain-language summary in chat (`id`/`title`/`summary`, `## Why`, compact overview of decisions/approach, and `## Risks and open points`) without dumping the full heavy sections (`## Starting point`, `## Decisions`, `## Scope`, `## Approach`, `## Acceptance criteria`) into the chat message; write the complete template below to disk in Phase 5 after approval.
+
 ```markdown
 ---
 id: feature/01
@@ -22,12 +25,12 @@ The problem or goal in 2-4 sentences, and how it supports the product vision
 (quote the relevant line from index.md).
 
 ## Starting point (audit findings)
-- Verified: facts about the current code/docs that were checked, with where (file, command, source).
+- Verified: facts about the current code/docs that were checked, with where (file, command, source), plus **Control Point 1 (2 pros and 2 cons from subject to solution)** per topic/sub-topic.
 - Corrected: earlier beliefs or docs that turned out wrong or outdated.
 - Unverified: what could not be confirmed, and why.
 
-## Decisions (from the grill)
-| Question | Decision | Reason |
+## Decisions (from the grill — Control Point 2: include 2 pros and 2 cons from subject to solution)
+| Question | Decision | Reason (incl. 2 pros & 2 cons from subject to solution) |
 | --- | --- | --- |
 
 ## Scope
@@ -38,7 +41,7 @@ The problem or goal in 2-4 sentences, and how it supports the product vision
 Technical choices, tree, dependency direction, boundaries and key interfaces, as in `scaffold-template.md`. Omit this section for changes inside one existing module.
 
 ## Approach
-Numbered steps, each small enough to be done and checked on its own. When a scaffold exists, make it one step per module, so each module can be generated in one pass from its contract. Code implementation steps are delegated to a clean code-subagent with a lossless `compress_context` Subagent Context Pack (`mcp/context-compressor`).
+Numbered steps, each small enough to be done and checked on its own. When a scaffold exists, make it one step per module, so each module can be generated in one pass from its contract. File or deliverable implementation steps are delegated to a clean execution subagent with a lossless `compress_context` Subagent Context Pack (`mcp/context-compressor`).
 1. ...
 
 ## Acceptance criteria
@@ -59,13 +62,18 @@ For bugs, replace "Why" with **Symptom, expected behaviour, how to reproduce** a
 
 ## Index format
 
-`./docs/index.md` has three parts: the product vision, `## Search keywords` (maintained by the planner), and the regenerated tables.
+`./docs/index.md` has four parts: the product vision, `## Standing constraints` (active project-wide invariants/exclusions with source item IDs, validated by `docs_tool.py check`), `## Search keywords` (maintained by the planner), and the regenerated tables.
 
 ```markdown
 # Docs index
 
 ## Product vision
 3-5 lines: what the product is for, who it is for, what it is not.
+
+## Standing constraints
+| ID | Constraint (DO NOT / MUST) | Source |
+| --- | --- | --- |
+| INV-01 | Hard project-wide exclusion or mandatory invariant. | bugs/01 |
 
 ## Search keywords
 [vision-term-1, scale-term-2, domain-term-3, ...]

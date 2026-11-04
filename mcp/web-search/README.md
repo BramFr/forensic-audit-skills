@@ -19,12 +19,17 @@ Built-in agent web tools often truncate pages, fail on PDFs, or require paid sea
 
 If all three tiers fail (for example a hard login wall or unreachable host), it returns an explicit `ERROR:` string rather than an empty pass so the agent never mistakes a failed fetch for `🔎 SOURCED`.
 
-## Built-in Lossless Token Optimizations (`feature/07` & `bugs/04`)
+## Built-in Lossless Token Optimizations (`feature/07`–`feature/20` & `bugs/04`)
 
-1. **Filtered Page Scoping (`filter_query`)**: When `filter_query` matches blocks on a page, returns only `## Page Headings Index` + `## Filtered Matches` without re-appending the full unfiltered page underneath (**-72.5% tokens**).
-2. **Positional Pipe-DSV (`#schema:`)**: Formats DuckDuckGo results (`#schema:idx|title|url|snippet`, **-24.2% tokens**) and extracted catalog/listing items (`#schema:title|price|url|details`).
-3. **Pure Readable Text with Visible `<pre>` Code Preserved**: Strips `<script>`, `<style>`, `<svg>`, `<noscript>`, inline `[text](https://...)` URL targets, Sphinx `[#]`/`[¶]` permalinks, and Markdown formatting wrappers (`**`, ```` ``` ````) while preserving 100% of prose, tables, inline `<code>` values, and visible `<pre>` code blocks as plain text (**-22.4% to -64.7% tokens**; pass `include_code=True` if fenced ```` ``` ```` wrappers are desired).
-4. **URL Tracking Parameter Stripping & Catalog Deduplication**: Strips `utm_*`, `fbclid`, `gclid`, `_trk*`, `hash`, `itmmeta`, `itmprp`, and `amdata` from extracted URLs and omits duplicate `trafilatura` footer text when `>= 5` structured catalog items are extracted (**-79.3% tokens** on catalog pages).
+1. **1-Turn `auto_open_top` / `open:` Primary-Source Opening (`feature/19`)**: Ranks search results by primary-authority tier (`rfc-editor.org`, `ietf.org`, `iso.org`, `nist.gov`, `w3.org`, `owasp.org`, `.gov`, `.edu`, official docs) and opens the top $N$ primary sources inside the same tool call (`🔎 SOURCED` in 1 turn instead of 2).
+2. **`<= 9,500 B` Batch Slack-Redistributed Budget (`feature/19`)**: Supports up to 10 queries/URLs per batch (`queries_or_urls=[...]`), redistributing unused byte slack from smaller items to larger primary sources and truncating only on clean paragraph boundaries (`\n\n`) (`46,695 B -> 9,275 B <= 9,500 B`, **-80.1% bytes**, `0` `>10,240 B` temp-file offloads).
+3. **Persistent SQLite WAL + RFC 3986 + RFC 9111 `ETag` Cache (`feature/19`)**: Stores parsed pages in SQLite (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`) keyed by RFC 3986 §6 normalized URIs and revalidates expired entries via `If-None-Match` / `If-Modified-Since` (`HTTP 304 Not Modified`, **100% network elimination on warm hits**).
+4. **Session-Delta Block Re-Slicing (`feature/19`)**: Tracks SHA-256 block hashes per normalized URL within a session so a 2nd visit with a new `filter_query` omits the already-shown `## Page Headings Index` and previously returned blocks (**-11.4% bytes** on 2nd view).
+5. **Compact Tool Schema `<= 3.1 KB` & `output_schema=None` (`feature/18`, `feature/20`)**: Registers `@mcp.tool(output_schema=None)` and keeps `search_website.json` at `2,565 B <= 3,100 B` (**-37.8%** vs. `4,124 B`) while preserving all `AliasChoices` and mandatory `./docs/index.md` `## Search keywords` rules.
+6. **Filtered Page Scoping (`filter_query`)**: When `filter_query` matches blocks on a page, returns only `## Page Headings Index` + `## Filtered Matches` without re-appending the full unfiltered page underneath (**-72.5% tokens**).
+7. **Positional Pipe-DSV (`#schema:`)**: Formats DuckDuckGo results (`#schema:idx|title|url|snippet`, **-24.2% tokens**) and extracted catalog/listing items (`#schema:title|price|url|details`).
+8. **Pure Readable Text with Visible `<pre>` Code Preserved**: Strips `<script>`, `<style>`, `<svg>`, `<noscript>`, inline `[text](https://...)` URL targets, Sphinx `[#]`/`[¶]` permalinks, and Markdown formatting wrappers (`**`, ```` ``` ````) while preserving 100% of prose, tables, inline `<code>` values, and visible `<pre>` code blocks as plain text (**-22.4% to -64.7% tokens**; pass `include_code=True` if fenced ```` ``` ```` wrappers are desired).
+9. **URL Tracking Parameter Stripping & Catalog Deduplication**: Strips `utm_*`, `fbclid`, `gclid`, `_trk*`, `hash`, `itmmeta`, `itmprp`, and `amdata` from extracted URLs and omits duplicate `trafilatura` footer text when `>= 5` structured catalog items are extracted (**-79.3% tokens** on catalog pages).
 
 ## Install & Register
 
@@ -57,9 +62,12 @@ Add `web-search` to `~/.gemini/config/mcp_config.json` (Antigravity / Gemini CLI
 
 *(On Windows, you can also point `command` directly to `mcp/web-search/.venv/Scripts/python.exe` with `args: [".../mcp/web-search/server.py"]` for zero-overhead startup.)*
 
-## Verify
+## Verify & Reproducible 3-Profile Benchmark (`feature/20`)
+
+See [`../../docs/benchmarks/benchmark-1request.md`](../../docs/benchmarks/benchmark-1request.md) and [`../../docs/feature/20-reproduceerbare-3-profielen-benchmark-en-regressiefix.md`](../../docs/feature/20-reproduceerbare-3-profielen-benchmark-en-regressiefix.md) (`feature/20`) for the full 3-profile 1-request benchmark (`989,768 -> 292,313 [-70.5%] -> 126,831 [-87.2%]` cumulative tokens across `24 -> 10 -> 7` turns).
 
 ```bash
 uv run --directory mcp/web-search flake8 server.py tests/test_server.py --max-line-length=100
 uv run --directory mcp/web-search pytest -o pythonpath=. -v
+python scripts/benchmark_1request.py --check
 ```

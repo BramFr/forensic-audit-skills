@@ -7,7 +7,7 @@ summary: Fase 2.5 (7 dimensies + systeemanalyse), grill 3-10 vragen in rondes en
 tags: [planner, docs-first-planner, first-principles, grill, verificatie, domeinneutraal, web-search]
 created: 2026-10-30
 updated: 2026-10-30
-related: [feature/03, feature/04, feature/09, bugs/05]
+related: [feature/03, feature/04, feature/09, bugs/05, feature/17, bugs/06]
 ---
 
 # First-principles analyse, grill van 3-10 vragen en web-geverifieerde antwoordlus in docs-first-planner

@@ -1,10 +1,10 @@
 {
   "name": "forensic-audit-skills",
-  "description": "Zero-trust audit skills for AI agents: forensic verification of AI output in any domain, and a crawl-driven, zero-hardcode end-to-end audit of websites with visual evidence",
+  "description": "Zero-trust audit skills for AI agents: forensic verification of AI output in any domain, and a crawl-driven, zero-hardcode end-to-end audit of websites with visual evidence, plus a domain-neutral first-principles intake and design engine for building, tuning or solving anything",
   "version": "1.0.0",
   "author": {
     "name": "BramFr"
   },
   "license": "MIT",
-  "keywords": ["security", "audit", "fact-check", "e2e", "playwright", "visual-testing", "zero-trust", "skills"]
+  "keywords": ["security", "audit", "fact-check", "e2e", "playwright", "visual-testing", "zero-trust", "skills", "first-principles", "systems-engineering", "intake"]
 }

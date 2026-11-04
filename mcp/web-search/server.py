@@ -1,8 +1,13 @@
 import contextlib
+import hashlib
 import json
+import os
 import re
+import sqlite3
 import sys
+import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import (
     parse_qs,
@@ -20,14 +25,69 @@ with contextlib.redirect_stdout(sys.stderr):
     import pymupdf
     import pymupdf4llm
     import trafilatura
-    from curl_cffi import requests as curl_requests
+    from curl_cffi import CurlOpt, requests as curl_requests
     from ddgs import DDGS
     from ddgs.exceptions import DDGSException
     from fastmcp import FastMCP
     from lxml import html as lxml_html
-    from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+    from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 mcp = FastMCP("web-search")
+
+_MAX_CACHE_ENTRIES = 128
+_SESSION_SENT_BLOCKS: dict[str, set[str]] = {}
+_SQLITE_CONNS: dict[str, sqlite3.Connection] = {}
+
+
+def _get_sqlite_conn() -> sqlite3.Connection | None:
+    db_path_str = os.environ.get(
+        "WEB_SEARCH_CACHE_DB",
+        str(Path(__file__).resolve().parent / ".cache" / "web_search_cache.sqlite3"),
+    )
+    conn = _SQLITE_CONNS.get(db_path_str)
+    if conn is not None:
+        return conn
+    try:
+        db_path = Path(db_path_str)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path), timeout=5.0, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS http_cache ("
+            "norm_url TEXT PRIMARY KEY, include_code INTEGER, markdown_body TEXT, "
+            "etag TEXT, last_modified TEXT, fetched_at REAL, expires_at REAL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS search_cache ("
+            "norm_query TEXT PRIMARY KEY, output TEXT, fetched_at REAL, expires_at REAL)"
+        )
+        conn.commit()
+        _SQLITE_CONNS[db_path_str] = conn
+        return conn
+    except Exception:
+        return None
+
+
+class _CacheDict(dict):
+    def __init__(self, table: str) -> None:
+        super().__init__()
+        self._table = table
+
+    def clear(self) -> None:
+        super().clear()
+        if self._table == "http_cache":
+            _SESSION_SENT_BLOCKS.clear()
+        conn = _get_sqlite_conn()
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.execute(f"DELETE FROM {self._table}")
+                conn.commit()
+
+
+_SEARCH_CACHE: dict[str, str] = _CacheDict("search_cache")
+_URL_CACHE: dict[tuple[str, str, bool], str] = _CacheDict("http_cache")
 
 DEFAULT_HEADERS = {
     "Accept": (
@@ -65,7 +125,25 @@ _ANTIBOT_PATTERNS = re.compile(
     r"error page\s*\|\s*ebay|sorry voor de onderbreking|"
     r"attention required!\s*\|\s*cloudflare|just a moment\.\.\.|"
     r"verify you are human|access denied|cc=botnet|anomaly-modal|"
-    r"splashui/captcha|enable javascript and cookies to continue)",
+    r"splashui/captcha|enable javascript and cookies to continue|"
+    r"cookies must be enabled|enable cookies for|please enable cookies|"
+    r"__identity_pow_cookie_check|/_pow/solve)",
+    re.IGNORECASE,
+)
+_POW_CHALLENGE_ID_RE = re.compile(
+    r"""(?:challengeId|challenge_id)\s*[:=]\s*['"]([^'"]+)['"]""",
+    re.IGNORECASE,
+)
+_POW_BITS_RE = re.compile(
+    r"""\bbits\s*[:=]\s*(\d+)""",
+    re.IGNORECASE,
+)
+_POW_SOLVE_PATH_RE = re.compile(
+    r"""fetch\(\s*['"]([^'"]*?_pow/solve[^'"]*)['"]""",
+    re.IGNORECASE,
+)
+_COOKIE_GATE_RE = re.compile(
+    r"(cookies must be enabled|enable cookies for|please enable cookies|enable cookies)",
     re.IGNORECASE,
 )
 _UI_NOISE_RE = re.compile(
@@ -140,54 +218,110 @@ _STOPWORDS = frozenset(
         "of",
     }
 )
+_TIER1_AUTHORITY_DOMAINS = (
+    "ietf.org",
+    "rfc-editor.org",
+    "iso.org",
+    "nen.nl",
+    "iec.ch",
+    "w3.org",
+    "whatwg.org",
+    "owasp.org",
+    "nist.gov",
+    "arxiv.org",
+    "aclanthology.org",
+    "doi.org",
+    "docs.python.org",
+    "sqlite.org",
+    "modelcontextprotocol.io",
+    "antigravity.google",
+    "ncbi.nlm.nih.gov",
+    "ema.europa.eu",
+    "eur-lex.europa.eu",
+    "wetten.overheid.nl",
+)
+_TIER2_AUTHORITY_DOMAINS = (
+    "readthedocs.io",
+    "github.com",
+    "gitlab.com",
+    "microsoft.com",
+    "google.com",
+    "anthropic.com",
+    "openai.com",
+    "mozilla.org",
+    "postgresql.org",
+    "niso.org",
+)
+_IMMUTABLE_STD_DOMAINS = (
+    "rfc-editor.org",
+    "datatracker.ietf.org",
+    "ietf.org",
+    "arxiv.org",
+    "doi.org",
+    "w3.org",
+    "iso.org",
+    "niso.org",
+)
 
 
 class SearchWebsiteInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     query_or_url: str = Field(
+        default="",
         validation_alias=AliasChoices("query_or_url", "query", "url", "q"),
         description=(
-            "Search query, http(s) URL, or 'https://... <filter_keywords>' to scrape and filter a URL "
-            "(call as search_website(query_or_url=\"...\")). "
-            "MANDATORY FOR SEARCH QUERIES: before searching, check whether ./docs/index.md exists with "
-            "a '## Search keywords' section (using compress_context(file_path='docs/index.md', section='Search keywords') "
-            "when available). If present AND the user's request is about the project or its domain, you MUST "
-            "include 1 to 3 fitting terms from '## Search keywords' in query_or_url (for architecture, UI, "
-            "canvas, scale or performance queries, pick 1-2 leading vision/scale priority terms from the start "
-            "of the list; for protocol, RFC or standard specs, pick 1-2 matching technical domain terms from "
-            "the list; strip search-operator punctuation like '+' from keywords). Never send 0 keywords when "
-            "'## Search keywords' is present. If the request is a standalone question outside the project's "
-            "domain (e.g., an unrelated consumer or personal question while the project folder is open), "
-            "do NOT inject project keywords into the search query."
+            "Search query (4-6 core terms, or 'open: <query>' to auto-open top primary URL), "
+            "http(s) URL, 'https://... <keywords>', or ' || '-separated items. Follow the "
+            "'## Search keywords' rule when ./docs/index.md exists."
+        ),
+    )
+    queries_or_urls: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional batch list of up to 10 search queries or http(s) URLs executed in one "
+            "call with shared SQLite WAL cache and URL deduplication."
         ),
     )
     filter_query: str | None = Field(
         default=None,
         validation_alias=AliasChoices("filter_query", "filter", "keywords"),
         description=(
-            "Recommended keyword filter when query_or_url is an http(s) URL (or pass 'https://... <keywords>' "
-            "inline in query_or_url). Pass filter_query by default on long pages, product catalogs, legal texts "
-            "or PDFs to keep outputs under 10 KB. Filters extracted products, listings and text sections on the "
-            "page by matching terms from the user's question, and falls back to a 'site:<domain> <filter_query>' "
-            "search if 0 items match on the page."
+            "Keyword filter for http(s) URLs (or inline 'https://... <keywords>'). Pass by "
+            "default on long pages, catalogs or PDFs (<10 KB) to filter items/sections by "
+            "matching terms, with 'site:<domain>' fallback on 0 matches."
         ),
     )
     include_code: bool = Field(
         default=False,
         description=(
-            "Optional flag when fetching an http(s) URL (default False). By default, multi-line code "
-            "blocks (<pre>, ```...```) are stripped while preserving inline <code> values in prose. "
-            "Set to True only when verbatim code examples from a page are explicitly needed."
+            "Keep multi-line code blocks (<pre>, ```) when fetching an http(s) URL "
+            "(default False keeps inline <code> only)."
+        ),
+    )
+    auto_open_top: int = Field(
+        default=0,
+        ge=0,
+        le=3,
+        validation_alias=AliasChoices("auto_open_top", "auto_open"),
+        description=(
+            "Number of top authoritative primary URLs (0-3) to auto-open and filter "
+            "after a DuckDuckGo search (or prefix 'open: ')."
         ),
     )
 
-    @field_validator("query_or_url")
-    @classmethod
-    def _must_not_be_empty(cls, value: str) -> str:
-        if not value:
+    @model_validator(mode="after")
+    def _must_not_be_empty(self) -> "SearchWebsiteInput":
+        has_single = bool(self.query_or_url and self.query_or_url.strip())
+        cleaned_batch = [
+            item.strip()
+            for item in (self.queries_or_urls or [])
+            if isinstance(item, str) and item.strip()
+        ]
+        if not has_single and not cleaned_batch:
             raise ValueError("query_or_url must not be empty")
-        return value
+        self.queries_or_urls = cleaned_batch if cleaned_batch else None
+        return self
 
 
 def _is_antibot_or_error_page(
@@ -242,8 +376,133 @@ def _get_or_create_session(profile: str) -> Any:
     return session
 
 
-def _http_get(url: str, timeout: float = 30.0) -> Any:
-    """Fetch URL with persistent cookie jar, consent-gate unwrapping and TLS profile rotation."""
+def _try_solve_cookie_or_pow_challenge(
+    session: Any,
+    url: str,
+    html_text: str,
+    req_headers: dict[str, str],
+    timeout: float,
+) -> Any | None:
+    """Autonomously solve SHA-256 Proof-of-Work (/ _pow/solve) or cookie-priming challenges on the active session."""
+    if not html_text:
+        return None
+
+    parsed = urlparse(url)
+    origin_referer = (
+        f"{parsed.scheme}://{parsed.netloc}/"
+        if parsed.scheme and parsed.netloc
+        else url
+    )
+
+    cid_match = _POW_CHALLENGE_ID_RE.search(html_text)
+    if cid_match and (
+        "/_pow/solve" in html_text or _POW_SOLVE_PATH_RE.search(html_text)
+    ):
+        challenge_id = cid_match.group(1)
+        bits_match = _POW_BITS_RE.search(html_text)
+        bits = min(max(int(bits_match.group(1)), 1), 22) if bits_match else 12
+        path_match = _POW_SOLVE_PATH_RE.search(html_text)
+        pow_path = path_match.group(1) if path_match else "/_pow/solve"
+        solve_url = urljoin(url, pow_path)
+
+        shift = 256 - bits
+        solved_nonce: int | None = None
+        for nonce in range(1 << (bits + 5)):
+            digest = hashlib.sha256(
+                f"{challenge_id}:{nonce}".encode()
+            ).digest()
+            if int.from_bytes(digest, "big") >> shift == 0:
+                solved_nonce = nonce
+                break
+
+        if solved_nonce is not None:
+            payload = json.dumps(
+                {
+                    "challenge_id": challenge_id,
+                    "nonce": str(solved_nonce),
+                    "redirect_url": url,
+                }
+            )
+            post_headers = {
+                **req_headers,
+                "Content-Type": "application/json",
+                "Referer": url,
+            }
+            try:
+                pow_resp = session.post(
+                    solve_url,
+                    data=payload,
+                    headers=post_headers,
+                    allow_redirects=True,
+                    timeout=timeout,
+                )
+                target_url = url
+                if getattr(pow_resp, "status_code", 500) < 400:
+                    try:
+                        res_json = pow_resp.json()
+                        if isinstance(res_json, dict) and res_json.get(
+                            "redirect_url"
+                        ):
+                            target_url = urljoin(
+                                url, str(res_json["redirect_url"])
+                            )
+                    except Exception:
+                        pass
+                    re_resp = session.get(
+                        target_url,
+                        headers={**req_headers, "Referer": url},
+                        allow_redirects=True,
+                        timeout=timeout,
+                    )
+                    re_url = str(getattr(re_resp, "url", target_url))
+                    if not _is_antibot_or_error_page(
+                        re_resp.status_code, re_resp.text, re_url
+                    ):
+                        return re_resp
+            except Exception:
+                pass
+
+    if _COOKIE_GATE_RE.search(html_text):
+        try:
+            session.get(
+                origin_referer,
+                headers=DEFAULT_HEADERS,
+                allow_redirects=True,
+                timeout=timeout,
+            )
+        except Exception:
+            pass
+        if hasattr(session, "cookies"):
+            try:
+                session.cookies.update(
+                    {"cookie_consent": "true", "cookies_enabled": "1"}
+                )
+            except Exception:
+                pass
+        try:
+            re_resp = session.get(
+                url,
+                headers={**req_headers, "Referer": origin_referer},
+                allow_redirects=True,
+                timeout=timeout,
+            )
+            re_url = str(getattr(re_resp, "url", url))
+            if not _is_antibot_or_error_page(
+                re_resp.status_code, re_resp.text, re_url
+            ):
+                return re_resp
+        except Exception:
+            pass
+
+    return None
+
+
+def _http_get(
+    url: str,
+    timeout: float = 30.0,
+    extra_headers: dict[str, str] | None = None,
+) -> Any:
+    """Fetch URL with persistent cookie jar, consent-gate unwrapping, PoW/cookie-wall solving and TLS profile rotation."""
     parsed = urlparse(url)
     origin_referer = (
         f"{parsed.scheme}://{parsed.netloc}/"
@@ -252,14 +511,15 @@ def _http_get(url: str, timeout: float = 30.0) -> Any:
     )
     last_resp: Any = None
     last_exc: Exception | None = None
+    base_hdrs = {**DEFAULT_HEADERS, **(extra_headers or {})}
 
     for profile in IMPERSONATE_PROFILES:
         session = _get_or_create_session(profile)
         for attempt in range(3):
             req_headers = (
-                {**DEFAULT_HEADERS, "Referer": origin_referer}
+                {**base_hdrs, "Referer": origin_referer}
                 if attempt > 0
-                else DEFAULT_HEADERS
+                else base_hdrs
             )
             try:
                 resp = session.get(
@@ -269,29 +529,74 @@ def _http_get(url: str, timeout: float = 30.0) -> Any:
                     timeout=timeout,
                 )
             except Exception as exc:
-                last_exc = exc
-                break
+                exc_msg = str(exc)
+                if "61" in exc_msg or "content encoding" in exc_msg.lower():
+                    identity_headers = {
+                        **req_headers,
+                        "Accept-Encoding": "identity",
+                    }
+                    try:
+                        resp = session.get(
+                            url,
+                            headers=identity_headers,
+                            allow_redirects=True,
+                            timeout=timeout,
+                        )
+                    except Exception:
+                        try:
+                            raw_session = curl_requests.Session(
+                                impersonate=profile,
+                                curl_options={CurlOpt.HTTP_CONTENT_DECODING: 0},
+                            )
+                            raw_session.cookies.update(DEFAULT_COOKIES)
+                            resp = raw_session.get(
+                                url,
+                                headers=identity_headers,
+                                allow_redirects=True,
+                                timeout=timeout,
+                            )
+                        except Exception as retry_exc:
+                            last_exc = retry_exc
+                            break
+                else:
+                    last_exc = exc
+                    break
+
+            if resp.status_code == 304:
+                return resp
 
             content_type = resp.headers.get("content-type", "")
-            if "html" in content_type.lower() and resp.status_code < 400:
+            is_html = "html" in content_type.lower() or not content_type
+            if is_html and resp.status_code < 400:
                 final_url = str(getattr(resp, "url", url))
                 callback_url = _unwrap_consent_redirect(final_url, resp.text)
                 if callback_url and callback_url != final_url:
                     resp = session.get(
                         callback_url,
-                        headers=DEFAULT_HEADERS,
+                        headers=base_hdrs,
                         allow_redirects=True,
                         timeout=timeout,
                     )
 
             last_resp = resp
             final_url = str(getattr(resp, "url", url))
-            if "html" not in content_type.lower() and resp.status_code < 400:
+            if not is_html and resp.status_code < 400:
                 return resp
             if not _is_antibot_or_error_page(
                 resp.status_code, resp.text, final_url
             ):
                 return resp
+            if is_html:
+                solved = _try_solve_cookie_or_pow_challenge(
+                    session, final_url, resp.text, req_headers, timeout
+                )
+                if solved is not None:
+                    last_resp = solved
+                    solved_url = str(getattr(solved, "url", final_url))
+                    if not _is_antibot_or_error_page(
+                        solved.status_code, solved.text, solved_url
+                    ):
+                        return solved
 
     if last_resp is not None:
         return last_resp
@@ -468,12 +773,160 @@ def _clean_tracking_url(url: str) -> str:
         return url
 
 
+_UNRESERVED_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+)
+_PCT_ENCODED_RE = re.compile(r"%([0-9A-Fa-f]{2})")
+
+
+def _normalize_pct_encoding(val: str) -> str:
+    def _repl(m: re.Match[str]) -> str:
+        hex_str = m.group(1).upper()
+        byte_val = int(hex_str, 16)
+        if byte_val < 128 and chr(byte_val) in _UNRESERVED_CHARS:
+            return chr(byte_val)
+        return f"%{hex_str}"
+
+    return _PCT_ENCODED_RE.sub(_repl, val)
+
+
+def _normalize_cache_url(url: str) -> str:
+    """Normalize HTTP(S) URI per RFC 3986 Section 6 (scheme/host case, unreserved %XX, default port, fragment, trailing slash)."""
+    cleaned = _clean_tracking_url((url or "").strip())
+    if not cleaned:
+        return ""
+    try:
+        parts = urlsplit(cleaned)
+        scheme = parts.scheme.lower()
+        hostname = (parts.hostname or "").lower()
+        port = parts.port
+        if (scheme == "http" and port == 80) or (
+            scheme == "https" and port == 443
+        ):
+            port = None
+        if hostname:
+            if ":" in hostname and not hostname.startswith("["):
+                host_part = f"[{hostname}]"
+            else:
+                host_part = hostname
+            netloc = f"{host_part}:{port}" if port else host_part
+            if parts.username is not None:
+                userinfo = parts.username
+                if parts.password is not None:
+                    userinfo += f":{parts.password}"
+                netloc = f"{userinfo}@{netloc}"
+        else:
+            netloc = parts.netloc.lower()
+
+        path = _normalize_pct_encoding(parts.path or "/")
+        if not path:
+            path = "/"
+        elif path != "/" and path.endswith("/"):
+            path = path.rstrip("/") or "/"
+
+        query = _normalize_pct_encoding(parts.query)
+        return urlunsplit((scheme, netloc, path, query, ""))
+    except Exception:
+        return cleaned
+
+
+def _normalize_filter_key(filter_query: str | None) -> str:
+    """Normalize filter_query into sorted unique lowercase tokens for order-independent cache keys."""
+    tokens = [
+        t
+        for t in re.split(r"\W+", (filter_query or "").lower())
+        if t
+    ]
+    return " ".join(sorted(set(tokens)))
+
+
 def _escape_dsv_field(val: str, is_url: bool = False) -> str:
     """Escape a field for Positional Pipe-DSV (#schema:)."""
     cleaned = " ".join(str(val or "").splitlines()).strip()
     if is_url:
         return cleaned.replace("|", "%7C")
     return cleaned.replace("|", r"\|")
+
+
+def _clean_ddgs_snippet(text: str, max_bytes: int = 380) -> str:
+    """Deduplicate concatenated multi-card ddgs snippets and keep complete sentences within max_bytes."""
+    cleaned = " ".join(str(text or "").split()).strip()
+    if not cleaned:
+        return ""
+    if max_bytes <= 200 and " | " in cleaned:
+        segments = [
+            s.strip()
+            for s in re.split(r"(?<=[.!?])\s+|\s+\|\s+", cleaned)
+            if s.strip()
+        ]
+    else:
+        segments = [
+            s.strip()
+            for s in re.split(r"(?<=[.!?])\s+", cleaned)
+            if s.strip()
+        ]
+    deduped: list[str] = []
+    seen_lower: set[str] = set()
+    for seg in segments:
+        key = seg.casefold()
+        if key not in seen_lower:
+            seen_lower.add(key)
+            deduped.append(seg)
+    if not deduped:
+        return cleaned
+    kept: list[str] = []
+    sep = " | " if (max_bytes <= 200 and " | " in cleaned) else " "
+    for idx, seg in enumerate(deduped):
+        candidate = f"{sep.join(kept)}{sep}{seg}" if kept else seg
+        if len(candidate.encode("utf-8")) <= max_bytes or idx == 0:
+            kept.append(seg)
+            if len(candidate.encode("utf-8")) >= max_bytes:
+                break
+        else:
+            break
+    return sep.join(kept)
+
+
+def _rank_primary_authority_urls(results: list[Any]) -> list[str]:
+    """Rank candidate URLs by primary authority tier (Tier 1 standards/gov/edu, Tier 2 official docs/code, Tier 3 other)."""
+    scored: list[tuple[int, int, str]] = []
+    seen_norm: set[str] = set()
+    for idx, item in enumerate(results):
+        raw_url = (
+            (item.get("href") or item.get("url") or "")
+            if isinstance(item, dict)
+            else str(item or "")
+        ).strip()
+        if not _is_url(raw_url) or _is_ad_url(raw_url):
+            continue
+        norm = _normalize_cache_url(raw_url)
+        if not norm or norm in seen_norm:
+            continue
+        seen_norm.add(norm)
+        host = (urlparse(raw_url).hostname or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        tier = 3
+        if (
+            host.endswith((".gov", ".mil", ".edu"))
+            or any(
+                host == d or host.endswith("." + d)
+                for d in _TIER1_AUTHORITY_DOMAINS
+            )
+        ):
+            tier = 1
+        elif (
+            host.startswith("docs.")
+            or ".docs." in host
+            or any(
+                host == d or host.endswith("." + d)
+                for d in _TIER2_AUTHORITY_DOMAINS
+            )
+        ):
+            tier = 2
+        scored.append((tier, idx, raw_url))
+    scored.sort(key=lambda x: (x[0], x[1]))
+    return [x[2] for x in scored]
 
 
 def _clean_ddg_href(raw_href: str) -> str:
@@ -504,12 +957,15 @@ def _parse_ddg_html(
             continue
         results.append(
             {
-                "title": " ".join(title_el[0].text_content().split()),
+                "title": _clean_ddgs_snippet(
+                    " ".join(title_el[0].text_content().split()), max_bytes=160
+                ),
                 "href": cleaned_href,
-                "body": (
+                "body": _clean_ddgs_snippet(
                     " ".join(snippet_el[0].text_content().split())
                     if snippet_el
-                    else ""
+                    else "",
+                    max_bytes=380,
                 ),
             }
         )
@@ -540,9 +996,13 @@ def _search_ddgs_fallback(
             continue
         cleaned.append(
             {
-                "title": (item.get("title") or "Untitled").strip(),
+                "title": _clean_ddgs_snippet(
+                    (item.get("title") or "Untitled").strip(), max_bytes=160
+                ),
                 "href": href,
-                "body": (item.get("body") or "").strip(),
+                "body": _clean_ddgs_snippet(
+                    (item.get("body") or "").strip(), max_bytes=380
+                ),
             }
         )
         if len(cleaned) >= max_results:
@@ -992,6 +1452,10 @@ def _clean_plain_text_body(text: str, include_code: bool = False) -> str:
             continue
         if _is_box_drawing_line(s):
             continue
+        if re.search(r"(?:\.\s*){4,}\d+\s*$", s):
+            continue
+        if re.search(r"Standards Track\s+\[Page \d+\]", s, re.I):
+            continue
         if s:
             if s == last_non_empty_stripped:
                 continue
@@ -1143,13 +1607,22 @@ def _html_to_markdown(
         sections.append(cleaned_body)
 
     combined = "\n\n".join(s for s in sections if s).strip()
-    return combined or None
+    if not combined:
+        return None
+    if len(combined) < 600 and _ANTIBOT_PATTERNS.search(combined):
+        return None
+    return combined
 
 
 def _apply_content_filter(
-    markdown_body: str, url: str, filter_query: str
+    markdown_body: str,
+    url: str,
+    filter_query: str,
+    max_blocks: int = 40,
+    max_headings: int = 25,
+    max_bytes: int | None = None,
 ) -> str:
-    """Filter extracted Markdown items/blocks by filter_query; return Headings Index + Filtered Matches only."""
+    """Filter extracted Markdown items/blocks by filter_query; enforce max_bytes on complete blocks and apply session delta."""
     raw_terms = [
         t.lower()
         for t in re.split(r"\W+", filter_query)
@@ -1162,11 +1635,13 @@ def _apply_content_filter(
     for line in markdown_body.splitlines():
         s = line.strip()
         if s.startswith("#") and not s.startswith("#schema:"):
+            if max_headings < 25 and not s.startswith(("# ", "## ", "### ")):
+                continue
             clean_h = re.sub(
                 r"\[(?:#|¶|permalink)\]\([^)]*\)", "", s, flags=re.IGNORECASE
             ).strip()
             clean_h = re.sub(r"\s*[#¶]+\s*$", "", clean_h).strip()
-            if clean_h and clean_h not in headings and len(headings) < 25:
+            if clean_h and clean_h not in headings and len(headings) < max_headings:
                 headings.append(clean_h)
 
     blocks: list[str] = []
@@ -1196,18 +1671,55 @@ def _apply_content_filter(
         if hits > 0:
             scored.append((hits, -idx, block))
 
+    norm_url = _normalize_cache_url(url)
+    prior_sent = _SESSION_SENT_BLOCKS.get(norm_url)
     toc = (
         "## Page Headings Index\n" + "\n".join(headings) + "\n\n"
-        if headings
+        if headings and prior_sent is None
         else ""
     )
 
     if scored:
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        selected = [item[2] for item in scored[:40]]
+        candidates = [item[2] for item in scored[:max_blocks]]
+        delta_notice = ""
+        if prior_sent is not None:
+            new_cands = [
+                b
+                for b in candidates
+                if hashlib.sha1(b.encode("utf-8")).hexdigest()[:16] not in prior_sent
+            ]
+            if new_cands:
+                omitted_n = len(candidates) - len(new_cands)
+                candidates = new_cands
+                delta_notice = f"\n\n<!-- +{omitted_n} already-shown blocks & ToC omitted for this URL in current session -->"
+            else:
+                delta_notice = "\n\n<!-- +0 already-shown blocks & ToC omitted for this URL in current session -->"
+
+        if max_bytes is not None and max_bytes > 0 and candidates:
+            if toc and len(toc.encode("utf-8")) > max_bytes // 4:
+                max_h = 3 if max_bytes <= 1200 else 8
+                short_h = headings[: min(len(headings), max_h)]
+                toc = "## Page Headings Index\n" + "\n".join(short_h) + "\n\n"
+            selected: list[str] = [candidates[0]]
+            overhead = len(toc.encode("utf-8")) + len(delta_notice.encode("utf-8")) + 120
+            for blk in candidates[1:]:
+                trial = "\n\n".join(selected + [blk])
+                if overhead + len(trial.encode("utf-8")) <= max_bytes:
+                    selected.append(blk)
+                else:
+                    break
+        else:
+            selected = candidates
+
+        sent_set = _SESSION_SENT_BLOCKS.setdefault(norm_url, set())
+        for blk in selected:
+            sent_set.add(hashlib.sha1(blk.encode("utf-8")).hexdigest()[:16])
+
         filter_block = (
             f"## Filtered Matches ({len(selected)} of {len(blocks)} blocks matching `{filter_query}`)\n\n"
             + "\n\n".join(selected)
+            + delta_notice
         )
         return f"{toc}{filter_block}"
 
@@ -1230,13 +1742,103 @@ def _apply_content_filter(
     return f"{toc}{fallback_block}"
 
 
-def _fetch_url_as_markdown(
-    url: str, filter_query: str | None = None, include_code: bool = False
+def _fetch_url_as_markdown_uncached(
+    url: str,
+    filter_query: str | None = None,
+    include_code: bool = False,
+    max_blocks: int = 40,
+    max_headings: int = 25,
+    max_bytes: int | None = None,
 ) -> str:
+    norm_url = _normalize_cache_url(url)
+    code_int = int(bool(include_code))
+    now = time.time()
+    host = (urlparse(url).hostname or "").lower()
+    url_ttl = (
+        7 * 86400.0
+        if any(host == d or host.endswith("." + d) for d in _IMMUTABLE_STD_DOMAINS) or "/TR/" in url
+        else 24 * 3600.0
+    )
+    conn = _get_sqlite_conn()
+    cached_row: tuple[Any, ...] | None = None
+    if conn is not None and norm_url:
+        with contextlib.suppress(Exception):
+            cur = conn.execute(
+                "SELECT markdown_body, etag, last_modified, fetched_at, expires_at "
+                "FROM http_cache WHERE norm_url = ? AND include_code = ?",
+                (norm_url, code_int),
+            )
+            cached_row = cur.fetchone()
+
+    def _finalize_body(raw_body: str) -> str:
+        body_out = raw_body
+        active_fq = filter_query
+        if (
+            not active_fq
+            and max_bytes is not None
+            and len(body_out.encode("utf-8")) > max_bytes
+        ):
+            path_words = [
+                w.lower()
+                for w in re.split(r"\W+", urlparse(url).path)
+                if len(w) >= 3 and not w.isdigit() and w.lower() not in _STOPWORDS and w.lower() not in ("html", "htm", "php", "pdf", "docs", "articles")
+            ]
+            active_fq = " ".join(path_words[:6]) if path_words else "overview specification"
+        if active_fq:
+            body_out = _apply_content_filter(
+                body_out,
+                url,
+                active_fq,
+                max_blocks=max_blocks,
+                max_headings=max_headings,
+                max_bytes=max_bytes,
+            )
+        return f"# Source: {url}\n\n{body_out}"
+
+    if cached_row is not None and cached_row[0] and now <= float(cached_row[4] or 0):
+        return _finalize_body(str(cached_row[0]))
+
+    cond_headers: dict[str, str] = {}
+    if cached_row is not None and cached_row[0]:
+        if cached_row[1]:
+            cond_headers["If-None-Match"] = str(cached_row[1])
+        if cached_row[2]:
+            cond_headers["If-Modified-Since"] = str(cached_row[2])
+
     try:
-        response = _http_get(url)
+        if cond_headers:
+            try:
+                response = _http_get(url, extra_headers=cond_headers)
+            except TypeError:
+                response = _http_get(url)
+        else:
+            response = _http_get(url)
     except Exception as exc:
         return f"ERROR: Failed to fetch URL '{url}': {type(exc).__name__}: {exc}"
+
+    if getattr(response, "status_code", 200) == 304 and cached_row is not None and cached_row[0]:
+        if conn is not None and norm_url:
+            with contextlib.suppress(Exception):
+                conn.execute(
+                    "UPDATE http_cache SET fetched_at = ?, expires_at = ? WHERE norm_url = ?",
+                    (now, now + url_ttl, norm_url),
+                )
+                conn.commit()
+        return _finalize_body(str(cached_row[0]))
+
+    def _save_to_sqlite(raw_md: str) -> None:
+        if conn is None or not norm_url or not raw_md or raw_md.startswith("ERROR:"):
+            return
+        etag_val = str(response.headers.get("etag", "") or "")
+        lm_val = str(response.headers.get("last-modified", "") or "")
+        with contextlib.suppress(Exception):
+            conn.execute(
+                "INSERT OR REPLACE INTO http_cache "
+                "(norm_url, include_code, markdown_body, etag, last_modified, fetched_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (norm_url, code_int, raw_md, etag_val, lm_val, now, now + url_ttl),
+            )
+            conn.commit()
 
     with contextlib.redirect_stdout(sys.stderr):
         final_url = str(getattr(response, "url", url))
@@ -1262,11 +1864,8 @@ def _fetch_url_as_markdown(
                     include_code=include_code,
                 )
                 if md_from_browser:
-                    if filter_query:
-                        md_from_browser = _apply_content_filter(
-                            md_from_browser, url, filter_query
-                        )
-                    return f"# Source: {url}\n\n{md_from_browser}"
+                    _save_to_sqlite(md_from_browser)
+                    return _finalize_body(md_from_browser)
             return (
                 f"ERROR: HTTP {response.status_code} (or anti-bot challenge page) "
                 f"when fetching URL '{url}'."
@@ -1294,19 +1893,21 @@ def _fetch_url_as_markdown(
             )
             if not body_out:
                 body_out = md_text.strip()
-            if filter_query:
-                body_out = _apply_content_filter(body_out, url, filter_query)
-            return f"# Source: {url}\n\n{body_out}"
+            _save_to_sqlite(body_out)
+            return _finalize_body(body_out)
 
         lowered_ct = content_type.lower()
         if any(
             token in lowered_ct
             for token in ("text/plain", "text/markdown", "application/json")
         ):
-            body_out = response.text
-            if filter_query:
-                body_out = _apply_content_filter(body_out, url, filter_query)
-            return f"# Source: {url}\n\n{body_out}"
+            body_out = _clean_plain_text_body(
+                response.text, include_code=include_code
+            )
+            if not body_out:
+                body_out = response.text
+            _save_to_sqlite(body_out)
+            return _finalize_body(body_out)
 
         md_body = _html_to_markdown(
             response.text,
@@ -1331,12 +1932,65 @@ def _fetch_url_as_markdown(
                 f"ERROR: Could not extract readable content from '{url}' "
                 "(page may require JavaScript or have no main article text)."
             )
-        if filter_query:
-            md_body = _apply_content_filter(md_body, url, filter_query)
-        return f"# Source: {url}\n\n{md_body}"
+        _save_to_sqlite(md_body)
+        return _finalize_body(md_body)
 
 
-def _search_duckduckgo(query: str) -> str:
+def _fetch_url_as_markdown(
+    url: str,
+    filter_query: str | None = None,
+    include_code: bool = False,
+    max_blocks: int = 40,
+    max_headings: int = 25,
+    max_bytes: int | None = None,
+) -> str:
+    cache_key = (
+        _normalize_cache_url(url),
+        _normalize_filter_key(filter_query),
+        bool(include_code),
+    )
+    cached = _URL_CACHE.get(cache_key)
+    if cached is not None and (
+        max_bytes is None or len(cached.encode("utf-8")) <= max_bytes
+    ):
+        return cached
+    result = _fetch_url_as_markdown_uncached(
+        url,
+        filter_query=filter_query,
+        include_code=include_code,
+        max_blocks=max_blocks,
+        max_headings=max_headings,
+        max_bytes=max_bytes,
+    )
+    if not result.startswith("ERROR:"):
+        if len(_URL_CACHE) >= _MAX_CACHE_ENTRIES:
+            _URL_CACHE.pop(next(iter(_URL_CACHE)))
+        _URL_CACHE[cache_key] = result
+    return result
+
+
+def _search_duckduckgo(query: str, max_results: int = 10) -> str:
+    norm_query = " ".join(query.split())
+    cached = _SEARCH_CACHE.get(norm_query)
+    conn = _get_sqlite_conn()
+    now = time.time()
+    if cached is None and conn is not None and norm_query:
+        with contextlib.suppress(Exception):
+            cur = conn.execute(
+                "SELECT output, expires_at FROM search_cache WHERE norm_query = ?",
+                (norm_query,),
+            )
+            row = cur.fetchone()
+            if row and row[0] and now <= float(row[1] or 0):
+                cached = str(row[0])
+                _SEARCH_CACHE[norm_query] = cached
+    if cached is not None:
+        if max_results < 10 and cached.startswith("# DuckDuckGo Search Results for:"):
+            c_lines = cached.splitlines()
+            if len(c_lines) > 2 + max_results:
+                return "\n".join(c_lines[: 2 + max_results])
+        return cached
+
     results: list[dict[str, Any]] = []
     tier1_blocked_or_failed = False
     tier1_error_detail = ""
@@ -1379,13 +2033,136 @@ def _search_duckduckgo(query: str) -> str:
         "#schema:idx|title|url|snippet",
     ]
     for idx, item in enumerate(results, start=1):
-        title = _escape_dsv_field(item.get("title") or "Untitled")
+        title = _escape_dsv_field(
+            _clean_ddgs_snippet(item.get("title") or "Untitled", max_bytes=160)
+        )
         href = _escape_dsv_field(
             _clean_tracking_url(item.get("href") or ""), is_url=True
         )
-        body = _escape_dsv_field(item.get("body") or "")
+        body = _escape_dsv_field(
+            _clean_ddgs_snippet(item.get("body") or "", max_bytes=380)
+        )
         lines.append(f"{idx}|{title}|{href}|{body}")
-    return "\n".join(lines).strip()
+    output = "\n".join(lines).strip()
+    if len(_SEARCH_CACHE) >= _MAX_CACHE_ENTRIES:
+        _SEARCH_CACHE.pop(next(iter(_SEARCH_CACHE)))
+    _SEARCH_CACHE[norm_query] = output
+    if conn is not None and norm_query:
+        with contextlib.suppress(Exception):
+            conn.execute(
+                "INSERT OR REPLACE INTO search_cache (norm_query, output, fetched_at, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (norm_query, output, now, now + 12 * 3600.0),
+            )
+            conn.commit()
+    if max_results < 10 and len(lines) > 2 + max_results:
+        return "\n".join(lines[: 2 + max_results])
+    return output
+
+
+_UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
+
+
+def _deduplicate_ddg_batch_output(
+    ddg_output: str, seen_urls: set[str], max_bytes: int | None = None
+) -> str:
+    """Remove duplicate URLs already returned in earlier queries of the same batch and fit within max_bytes."""
+    if not ddg_output.startswith("# DuckDuckGo Search Results for:"):
+        return ddg_output
+    top_part, sep_part, tail_part = ddg_output.partition("\n\n# Source: ")
+    lines = top_part.splitlines()
+    if len(lines) < 3 or lines[1] != "#schema:idx|title|url|snippet":
+        return ddg_output
+    header_lines = lines[:2]
+    kept_rows: list[str] = []
+    for line in lines[2:]:
+        parts = _UNESCAPED_PIPE_RE.split(line, maxsplit=3)
+        if len(parts) < 4:
+            kept_rows.append(line)
+            continue
+        _, title, url_field, snippet = parts
+        norm_url = _normalize_cache_url(url_field)
+        if norm_url and norm_url in seen_urls:
+            continue
+        if norm_url:
+            seen_urls.add(norm_url)
+        row_str = f"{len(kept_rows) + 1}|{title}|{url_field}|{snippet}"
+        if max_bytes is not None and kept_rows:
+            candidate_table = "\n".join(header_lines + kept_rows + [row_str])
+            if len(candidate_table.encode("utf-8")) > max_bytes:
+                break
+        kept_rows.append(row_str)
+    rebuilt = "\n".join(header_lines + kept_rows)
+    return f"{rebuilt}{sep_part}{tail_part}" if sep_part else rebuilt
+
+
+def _execute_single_target(
+    raw_item: str,
+    filter_query: str | None,
+    include_code: bool,
+    max_blocks: int = 40,
+    max_headings: int = 25,
+    max_ddg_results: int = 10,
+    auto_open_top: int = 0,
+    max_bytes: int | None = None,
+) -> str:
+    effective_auto_open = auto_open_top
+    cleaned_raw = raw_item.strip()
+    open_match = re.match(r"^(?:open:|@open\b)\s*(.+)$", cleaned_raw, re.IGNORECASE)
+    if open_match and not _is_url(cleaned_raw):
+        cleaned_raw = open_match.group(1).strip()
+        effective_auto_open = max(1, effective_auto_open)
+
+    target, active_filter = _split_url_and_filter(cleaned_raw, filter_query)
+    if _is_url(target):
+        return _fetch_url_as_markdown(
+            target,
+            filter_query=active_filter,
+            include_code=include_code,
+            max_blocks=max_blocks,
+            max_headings=max_headings,
+            max_bytes=max_bytes,
+        )
+
+    ddg_out = _search_duckduckgo(target, max_results=max_ddg_results)
+    if effective_auto_open <= 0 or not ddg_out.startswith("# DuckDuckGo Search Results for:"):
+        return ddg_out
+
+    row_dicts: list[dict[str, Any]] = []
+    for line in ddg_out.splitlines()[2:]:
+        parts = _UNESCAPED_PIPE_RE.split(line, maxsplit=3)
+        if len(parts) == 4:
+            row_dicts.append({"title": parts[1], "href": parts[2], "body": parts[3]})
+
+    ranked_urls = _rank_primary_authority_urls(row_dicts)
+    if not ranked_urls:
+        return ddg_out
+
+    open_filter = active_filter or target
+    opened_sections: list[str] = []
+    budget_total = max_bytes if max_bytes is not None else 9200
+    min_open_floor = 350 if max_bytes is not None else 1400
+    rem_open_bytes = max(min_open_floor, budget_total - len(ddg_out.encode("utf-8")) - 8)
+    for cand_url in ranked_urls:
+        rem_slots = effective_auto_open - len(opened_sections)
+        slot_bytes = max(min_open_floor, rem_open_bytes // max(1, rem_slots))
+        page_out = _fetch_url_as_markdown(
+            cand_url,
+            filter_query=open_filter,
+            include_code=include_code,
+            max_blocks=min(max_blocks, 15),
+            max_headings=min(max_headings, 15),
+            max_bytes=slot_bytes,
+        )
+        if not page_out.startswith("ERROR:"):
+            opened_sections.append(page_out)
+            rem_open_bytes = max(min_open_floor, rem_open_bytes - len(page_out.encode("utf-8")))
+            if len(opened_sections) >= effective_auto_open:
+                break
+
+    if not opened_sections:
+        return ddg_out
+    return ddg_out + "\n\n" + "\n\n".join(opened_sections)
 
 
 @mcp.tool(output_schema=None)
@@ -1393,34 +2170,24 @@ def search_website(
     query_or_url: Annotated[
         str,
         Field(
+            default="",
             validation_alias=AliasChoices("query_or_url", "query", "url", "q"),
             description=(
-                "Search query, http(s) URL, or 'https://... <filter_keywords>' to scrape and filter a URL "
-                "(call as search_website(query_or_url=\"...\")). "
-                "MANDATORY FOR SEARCH QUERIES: before searching, check whether ./docs/index.md exists with "
-                "a '## Search keywords' section (using compress_context(file_path='docs/index.md', section='Search keywords') "
-                "when available). If present AND the user's request is about the project or its domain, you MUST "
-                "include 1 to 3 fitting terms from '## Search keywords' in query_or_url (for architecture, UI, "
-                "canvas, scale or performance queries, pick 1-2 leading vision/scale priority terms from the start "
-                "of the list; for protocol, RFC or standard specs, pick 1-2 matching technical domain terms from "
-                "the list; strip search-operator punctuation like '+' from keywords). Never send 0 keywords when "
-                "'## Search keywords' is present. If the request is a standalone question outside the project's "
-                "domain (e.g., an unrelated consumer or personal question while the project folder is open), "
-                "do NOT inject project keywords into the search query."
+                "Search query (4-6 core terms, or 'open: <query>' to auto-open top primary URL), "
+                "http(s) URL, 'https://... <keywords>', or ' || '-separated items. Follow the "
+                "'## Search keywords' rule when ./docs/index.md exists."
             ),
         ),
-    ],
+    ] = "",
     filter_query: Annotated[
         str | None,
         Field(
             default=None,
             validation_alias=AliasChoices("filter_query", "filter", "keywords"),
             description=(
-                "Recommended keyword filter when query_or_url is an http(s) URL (or pass 'https://... <keywords>' "
-                "inline in query_or_url). Pass filter_query by default on long pages, product catalogs, legal texts "
-                "or PDFs to keep outputs under 10 KB. Filters extracted products, listings and text sections on the "
-                "page by matching terms from the user's question, and falls back to a 'site:<domain> <filter_query>' "
-                "search if 0 items match on the page."
+                "Keyword filter for http(s) URLs (or inline 'https://... <keywords>'). Pass by "
+                "default on long pages, catalogs or PDFs (<10 KB) to filter items/sections by "
+                "matching terms, with 'site:<domain>' fallback on 0 matches."
             ),
         ),
     ] = None,
@@ -1429,29 +2196,95 @@ def search_website(
         Field(
             default=False,
             description=(
-                "Optional flag when fetching an http(s) URL (default False). By default, multi-line code "
-                "blocks (<pre>, ```...```) are stripped while preserving inline <code> values in prose. "
-                "Set to True only when verbatim code examples from a page are explicitly needed."
+                "Keep multi-line code blocks (<pre>, ```) when fetching an http(s) URL "
+                "(default False keeps inline <code> only)."
             ),
         ),
     ] = False,
+    queries_or_urls: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description=(
+                "Optional batch list of up to 10 search queries or http(s) URLs executed in one "
+                "call with shared SQLite WAL cache and URL deduplication."
+            ),
+        ),
+    ] = None,
+    auto_open_top: Annotated[
+        int,
+        Field(
+            default=0,
+            ge=0,
+            le=3,
+            validation_alias=AliasChoices("auto_open_top", "auto_open"),
+            description=(
+                "Number of top authoritative primary URLs (0-3) to auto-open and filter "
+                "after a DuckDuckGo search (or prefix 'open: ')."
+            ),
+        ),
+    ] = 0,
 ) -> str:
-    """Search DuckDuckGo for a query, or fetch a webpage/PDF/catalog as Markdown for an http(s) URL via search_website(query_or_url="...", filter_query="...") (pass filter_query or inline 'https://... <keywords>' by default on long pages, catalogs or PDFs to avoid >10 KB outputs; include_code=False by default). MANDATORY BEFORE SEARCHING: check whether ./docs/index.md exists with '## Search keywords' (via compress_context(file_path='docs/index.md', section='Search keywords') when available). If present and the question relates to the project or its domain, always include 1 to 3 fitting keywords from '## Search keywords' in every search query (1-2 leading vision/scale priority terms for architecture/UI/scale/performance queries, or 1-2 technical domain terms for protocol/RFC/standard queries; never 0 keywords). For standalone questions outside the project's domain, search normally without project keywords."""
+    """Search DuckDuckGo (4-6 core terms; pass auto_open_top=1 or 'open: <query>' to auto-open top authoritative primary URL in 1 call), fetch an http(s) webpage/PDF/catalog as Markdown (pass filter_query or inline 'https://... <keywords>' on long pages/PDFs for <=10 KB; include_code=False default), or run up to 10 items via queries_or_urls=[...] (or 'q1 || q2') with SQLite WAL caching, <=9.5 KB slack-redistributed batch budget, and URL deduplication. MANDATORY BEFORE SEARCHING: check whether ./docs/index.md has '## Search keywords' (via compress_context(file_path='docs/index.md', section='Search keywords')). If present and in the project's domain, include 1-3 fitting keywords from '## Search keywords' in every query (1-2 leading vision/scale priority terms for project architecture/UI/scale/workflow queries, or 1-2 technical/methodological terms like primary-source-verification, ISO-NEN-IEC, IETF-RFC, NIST-SP-800, OWASP-ASVS, Python-stdlib for external protocol/RFC/standard/scientific queries instead of abstract vision words like zero-trust; never 0 keywords). Outside the project's domain, search without project keywords."""
     validated = SearchWebsiteInput(
         query_or_url=query_or_url,
+        queries_or_urls=queries_or_urls,
         filter_query=filter_query,
         include_code=include_code,
+        auto_open_top=auto_open_top,
     )
-    target, active_filter = _split_url_and_filter(
-        validated.query_or_url, validated.filter_query
-    )
-    if _is_url(target):
-        return _fetch_url_as_markdown(
-            target,
-            filter_query=active_filter,
-            include_code=validated.include_code,
+    items: list[str] = []
+    if validated.query_or_url:
+        if "||" in validated.query_or_url or "\n" in validated.query_or_url:
+            for part in re.split(r"\s*\|\|\s*|\r?\n", validated.query_or_url):
+                cleaned_part = part.strip()
+                if cleaned_part and cleaned_part not in items:
+                    items.append(cleaned_part)
+        else:
+            items.append(validated.query_or_url)
+    if validated.queries_or_urls:
+        for batch_item in validated.queries_or_urls:
+            if batch_item not in items:
+                items.append(batch_item)
+
+    items = items[:10]
+    batch_size = len(items)
+    if batch_size == 1:
+        return _execute_single_target(
+            items[0],
+            validated.filter_query,
+            validated.include_code,
+            auto_open_top=validated.auto_open_top,
         )
-    return _search_duckduckgo(target)
+
+    batch_max_blocks = max(8, 32 // batch_size)
+    batch_max_headings = min(20, max(10, 40 // batch_size))
+    batch_max_ddg = max(5, 18 // batch_size) if batch_size >= 3 else 10
+    total_batch_budget = 9400
+    remaining_budget = total_batch_budget - (batch_size - 1) * 7
+
+    seen_ddg_urls: set[str] = set()
+    outputs: list[str] = []
+    for idx, raw_item in enumerate(items):
+        remaining_items = batch_size - idx
+        item_max_bytes = max(450, remaining_budget // remaining_items)
+        out = _execute_single_target(
+            raw_item,
+            validated.filter_query,
+            validated.include_code,
+            max_blocks=batch_max_blocks,
+            max_headings=batch_max_headings,
+            max_ddg_results=batch_max_ddg,
+            auto_open_top=validated.auto_open_top,
+            max_bytes=item_max_bytes,
+        )
+        out = _deduplicate_ddg_batch_output(
+            out, seen_ddg_urls, max_bytes=item_max_bytes
+        )
+        used_bytes = len(out.encode("utf-8"))
+        remaining_budget = max(0, remaining_budget - used_bytes)
+        outputs.append(out)
+    return "\n\n---\n\n".join(outputs)
 
 
 if __name__ == "__main__":
