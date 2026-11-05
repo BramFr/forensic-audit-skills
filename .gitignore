@@ -5,5 +5,5 @@ __pycache__/
 .venv/
 .cache/
 *.sqlite3*
-./scripts/*
-./docs/*
+scripts/*
+docs/*
